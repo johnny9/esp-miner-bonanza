@@ -16,11 +16,9 @@
 #include "stratum_api.h"
 #include "stratum_v2_task.h"
 #include "utils.h"
+#include "bm_job_builder.h"
 
 static const char *TAG = "create_jobs_task";
-
-#define MAX_EXTRANONCE2_LEN 32
-#define MAX_EXTRANONCE2_STR (MAX_EXTRANONCE2_LEN * 2 + 1)
 
 static void generate_work(GlobalState *GLOBAL_STATE, mining_notify *notification, uint64_t extranonce_2, double difficulty);
 static void generate_work_sv2(GlobalState *GLOBAL_STATE, sv2_job_t *job, double difficulty);
@@ -155,7 +153,9 @@ void create_jobs_task(void *pvParameters)
             // Re-sending the same job restarts the nonce search from 0 and
             // produces duplicate shares. Only send work on new jobs.
             // (V1 and SV2 extended are fine — extranonce_2 gives unique work each time.)
-            if (active_protocol == STRATUM_PROTOCOL_V2 && !stratum_v2_is_extended_channel(GLOBAL_STATE)) {
+            if (active_protocol == STRATUM_PROTOCOL_V2 &&
+                !stratum_v2_is_extended_channel(GLOBAL_STATE) &&
+                !bm_job_should_generate_sv2_standard(false)) {
                 timeout_ms = ASIC_get_asic_job_frequency_ms(GLOBAL_STATE);
                 continue;
             }
@@ -190,40 +190,27 @@ void create_jobs_task(void *pvParameters)
 
 static void generate_work(GlobalState *GLOBAL_STATE, mining_notify *notification, uint64_t extranonce_2, double difficulty)
 {
-    if (GLOBAL_STATE->extranonce_2_len > MAX_EXTRANONCE2_LEN) {
-        ESP_LOGE(TAG, "extranonce_2_len %d exceeds maximum %d, skipping job", GLOBAL_STATE->extranonce_2_len, MAX_EXTRANONCE2_LEN);
-        return;
-    }
-    char extranonce_2_str[MAX_EXTRANONCE2_STR];
-    extranonce_2_generate(extranonce_2, GLOBAL_STATE->extranonce_2_len, extranonce_2_str);
-
-    uint8_t coinbase_tx_hash[32];
-    calculate_coinbase_tx_hash(notification->coinbase_1, notification->coinbase_2, GLOBAL_STATE->extranonce_str, extranonce_2_str, coinbase_tx_hash);
-
-    uint8_t merkle_root[32];
-    calculate_merkle_root_hash(coinbase_tx_hash, (uint8_t(*)[32])notification->merkle_branches, notification->n_merkle_branches, merkle_root);
-
-    bm_job *next_job = malloc(sizeof(bm_job));
-
+    bm_job *next_job = calloc(1, sizeof(*next_job));
     if (next_job == NULL) {
         ESP_LOGE(TAG, "Failed to allocate memory for new job");
         return;
     }
 
-    construct_bm_job(notification, merkle_root, GLOBAL_STATE->version_mask, difficulty, next_job);
-
-    next_job->extranonce2 = strdup(extranonce_2_str);
-    next_job->jobid = strdup(notification->job_id);
-    next_job->version_mask = GLOBAL_STATE->version_mask;
+    if (!bm_job_build_sv1(notification, GLOBAL_STATE->extranonce_str,
+                          GLOBAL_STATE->extranonce_2_len, extranonce_2,
+                          GLOBAL_STATE->version_mask, difficulty, next_job)) {
+        ESP_LOGE(TAG, "Unable to build SV1 job (extranonce2 length %d)",
+                 GLOBAL_STATE->extranonce_2_len);
+        free_bm_job(next_job);
+        return;
+    }
 
     // Check if ASIC is initialized before trying to send work
     if (!GLOBAL_STATE->ASIC_initalized) {
         // Clean up the job since we're not sending it
         // Note: This job was never stored in active_jobs, so it's safe to free
         ESP_LOGW(TAG, "ASIC not initialized, skipping job send");
-        free(next_job->jobid);
-        free(next_job->extranonce2);
-        free(next_job);
+        free_bm_job(next_job);
         return;
     }
 
@@ -235,69 +222,22 @@ static void generate_work(GlobalState *GLOBAL_STATE, mining_notify *notification
 // version bits using version_mask, giving different midstates per nonce search space.
 static void generate_work_sv2(GlobalState *GLOBAL_STATE, sv2_job_t *sv2_job, double difficulty)
 {
-    bm_job *next_job = malloc(sizeof(bm_job));
+    bm_job *next_job = calloc(1, sizeof(*next_job));
     if (next_job == NULL) {
         ESP_LOGE(TAG, "Failed to allocate memory for new SV2 job");
         return;
     }
 
-    uint32_t version_mask = GLOBAL_STATE->version_mask;
-
-    next_job->version = sv2_job->version;
-    next_job->target = sv2_job->nbits;
-    next_job->ntime = sv2_job->ntime;
-    next_job->starting_nonce = 0;
-    next_job->pool_diff = difficulty;
-
-    // SV2 provides merkle_root and prev_hash in internal byte order (SHA-256 output order).
-    // For bm_job storage: apply reverse_32bit_words (same as construct_bm_job does)
-    reverse_32bit_words(sv2_job->merkle_root, next_job->merkle_root);
-    reverse_32bit_words(sv2_job->prev_hash, next_job->prev_block_hash);
-
-    // Compute midstate(s) using the same logic as construct_bm_job.
-    // Midstate covers bytes 0-63 of block header: version(4B) + prev_hash(32B) + merkle_root[0:28](28B).
-    uint8_t midstate_data[64];
-    uint32_t base_version = sv2_job->version;
-    memcpy(midstate_data, &base_version, 4);
-    memcpy(midstate_data + 4, sv2_job->prev_hash, 32);
-    memcpy(midstate_data + 36, sv2_job->merkle_root, 28);
-
-    uint8_t midstate[32];
-    midstate_sha256_bin(midstate_data, 64, midstate);
-    reverse_32bit_words(midstate, next_job->midstate);
-
-    if (version_mask != 0) {
-        uint32_t rolled_version = increment_bitmask(base_version, version_mask);
-        memcpy(midstate_data, &rolled_version, 4);
-        midstate_sha256_bin(midstate_data, 64, midstate);
-        reverse_32bit_words(midstate, next_job->midstate1);
-
-        rolled_version = increment_bitmask(rolled_version, version_mask);
-        memcpy(midstate_data, &rolled_version, 4);
-        midstate_sha256_bin(midstate_data, 64, midstate);
-        reverse_32bit_words(midstate, next_job->midstate2);
-
-        rolled_version = increment_bitmask(rolled_version, version_mask);
-        memcpy(midstate_data, &rolled_version, 4);
-        midstate_sha256_bin(midstate_data, 64, midstate);
-        reverse_32bit_words(midstate, next_job->midstate3);
-        next_job->num_midstates = 4;
-    } else {
-        next_job->num_midstates = 1;
+    if (!bm_job_build_sv2_standard(sv2_job, GLOBAL_STATE->version_mask,
+                                   difficulty, next_job)) {
+        ESP_LOGE(TAG, "Unable to build SV2 standard job");
+        free_bm_job(next_job);
+        return;
     }
-
-    // SV2 job metadata
-    char jobid_str[16];
-    snprintf(jobid_str, sizeof(jobid_str), "%" PRIu32, sv2_job->job_id);
-    next_job->jobid = strdup(jobid_str);
-    next_job->extranonce2 = strdup(""); // unused in SV2 standard
-    next_job->version_mask = version_mask;
 
     if (!GLOBAL_STATE->ASIC_initalized) {
         ESP_LOGW(TAG, "ASIC not initialized, skipping SV2 job send");
-        free(next_job->jobid);
-        free(next_job->extranonce2);
-        free(next_job);
+        free_bm_job(next_job);
         return;
     }
 
@@ -309,101 +249,23 @@ static void generate_work_sv2(GlobalState *GLOBAL_STATE, sv2_job_t *sv2_job, dou
 static void generate_work_sv2_ext(GlobalState *GLOBAL_STATE, sv2_ext_job_t *ext_job,
                                    double difficulty, uint64_t extranonce_2_counter)
 {
-    sv2_conn_t *conn = GLOBAL_STATE->sv2_conn;
-    if (!conn) return;
-
-    bm_job *next_job = malloc(sizeof(bm_job));
+    bm_job *next_job = calloc(1, sizeof(*next_job));
     if (!next_job) {
         ESP_LOGE(TAG, "Failed to allocate memory for SV2 ext job");
         return;
     }
 
-    uint32_t version_mask = GLOBAL_STATE->version_mask;
-
-    // Derive extranonce_2 from counter
-    // SV2 spec: extranonce_size is the miner's rollable portion (not total)
-    uint8_t extranonce_2_len = conn->extranonce_size;
-    uint8_t extranonce_2[32];
-    memset(extranonce_2, 0, sizeof(extranonce_2));
-    // Encode counter as big-endian bytes
-    for (int i = extranonce_2_len - 1; i >= 0 && extranonce_2_counter > 0; i--) {
-        extranonce_2[i] = (uint8_t)(extranonce_2_counter & 0xFF);
-        extranonce_2_counter >>= 8;
+    if (!bm_job_build_sv2_extended(ext_job, GLOBAL_STATE->sv2_conn,
+                                   extranonce_2_counter, GLOBAL_STATE->version_mask,
+                                   difficulty, next_job)) {
+        ESP_LOGE(TAG, "Unable to build SV2 extended job");
+        free_bm_job(next_job);
+        return;
     }
-
-    // Compute coinbase tx hash: prefix + extranonce_prefix + extranonce_2 + suffix
-    uint8_t coinbase_tx_hash[32];
-    calculate_coinbase_tx_hash_bin(
-        ext_job->coinbase_prefix, ext_job->coinbase_prefix_len,
-        conn->extranonce_prefix, conn->extranonce_prefix_len,
-        extranonce_2, extranonce_2_len,
-        ext_job->coinbase_suffix, ext_job->coinbase_suffix_len,
-        coinbase_tx_hash);
-
-    // Compute merkle root
-    uint8_t merkle_root[32];
-    calculate_merkle_root_hash(coinbase_tx_hash,
-                               (const uint8_t (*)[32])ext_job->merkle_path,
-                               ext_job->merkle_path_count, merkle_root);
-
-    // Fill bm_job fields
-    next_job->version = ext_job->version;
-    next_job->target = ext_job->nbits;
-    next_job->ntime = ext_job->ntime;  // no offset — extranonce provides uniqueness
-    next_job->starting_nonce = 0;
-    next_job->pool_diff = difficulty;
-
-    // Same byte-order handling as generate_work_sv2
-    reverse_32bit_words(merkle_root, next_job->merkle_root);
-    reverse_32bit_words(ext_job->prev_hash, next_job->prev_block_hash);
-
-    // Compute midstate(s)
-    uint8_t midstate_data[64];
-    uint32_t base_version = ext_job->version;
-    memcpy(midstate_data, &base_version, 4);
-    memcpy(midstate_data + 4, ext_job->prev_hash, 32);
-    memcpy(midstate_data + 36, merkle_root, 28);
-
-    uint8_t midstate[32];
-    midstate_sha256_bin(midstate_data, 64, midstate);
-    reverse_32bit_words(midstate, next_job->midstate);
-
-    if (version_mask != 0) {
-        uint32_t rolled_version = increment_bitmask(base_version, version_mask);
-        memcpy(midstate_data, &rolled_version, 4);
-        midstate_sha256_bin(midstate_data, 64, midstate);
-        reverse_32bit_words(midstate, next_job->midstate1);
-
-        rolled_version = increment_bitmask(rolled_version, version_mask);
-        memcpy(midstate_data, &rolled_version, 4);
-        midstate_sha256_bin(midstate_data, 64, midstate);
-        reverse_32bit_words(midstate, next_job->midstate2);
-
-        rolled_version = increment_bitmask(rolled_version, version_mask);
-        memcpy(midstate_data, &rolled_version, 4);
-        midstate_sha256_bin(midstate_data, 64, midstate);
-        reverse_32bit_words(midstate, next_job->midstate3);
-        next_job->num_midstates = 4;
-    } else {
-        next_job->num_midstates = 1;
-    }
-
-    // Job metadata
-    char jobid_str[16];
-    snprintf(jobid_str, sizeof(jobid_str), "%" PRIu32, ext_job->job_id);
-    next_job->jobid = strdup(jobid_str);
-
-    // Store extranonce_2 as hex for share submission
-    char en2_hex[65];
-    bin2hex(extranonce_2, extranonce_2_len, en2_hex, sizeof(en2_hex));
-    next_job->extranonce2 = strdup(en2_hex);
-    next_job->version_mask = version_mask;
 
     if (!GLOBAL_STATE->ASIC_initalized) {
         ESP_LOGW(TAG, "ASIC not initialized, skipping SV2 ext job send");
-        free(next_job->jobid);
-        free(next_job->extranonce2);
-        free(next_job);
+        free_bm_job(next_job);
         return;
     }
 

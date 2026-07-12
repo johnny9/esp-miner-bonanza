@@ -748,12 +748,12 @@ int STRATUM_V1_submit_share(esp_transport_handle_t transport, int send_uid, cons
     return ret;
 }
 
-int STRATUM_V1_configure_version_rolling(esp_transport_handle_t transport, int send_uid, uint32_t * version_mask)
+int STRATUM_V1_configure_version_rolling(esp_transport_handle_t transport, int send_uid, uint32_t version_mask)
 {
     char configure_msg[BUFFER_SIZE];
     snprintf(configure_msg, sizeof(configure_msg),
-        "{\"id\":%d,\"method\":\"mining.configure\",\"params\":[[\"version-rolling\"],{\"version-rolling.mask\":\"ffffffff\"}]}\n",
-        send_uid);
+        "{\"id\":%d,\"method\":\"mining.configure\",\"params\":[[\"version-rolling\"],{\"version-rolling.mask\":\"%08lx\"}]}\n",
+        send_uid, version_mask);
     debug_stratum_tx(configure_msg);
 
     return esp_transport_write(transport, configure_msg, strlen(configure_msg), TRANSPORT_TIMEOUT_MS);

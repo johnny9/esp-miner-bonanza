@@ -94,7 +94,7 @@ void STRATUM_V1_free_mining_notify(mining_notify *params);
 
 int STRATUM_V1_authorize(esp_transport_handle_t transport, int send_uid, const char *username, const char *pass);
 
-int STRATUM_V1_configure_version_rolling(esp_transport_handle_t transport, int send_uid, uint32_t * version_mask);
+int STRATUM_V1_configure_version_rolling(esp_transport_handle_t transport, int send_uid, uint32_t version_mask);
 
 int STRATUM_V1_pong(esp_transport_handle_t transport, int message_id);
 

@@ -16,6 +16,7 @@
 #include <string.h>
 #include "utils.h"
 #include "coinbase_decoder.h"
+#include "asic.h"
 #include <esp_heap_caps.h>
 #include "esp_transport_ssl.h"
 #include "freertos/task.h"
@@ -284,8 +285,15 @@ void stratum_v1_task(void *pvParameters)
         SYSTEM_clean_jobs_queue(GLOBAL_STATE);
 
         ///// Start Stratum Action
-        // mining.configure - ID: 1
-        STRATUM_V1_configure_version_rolling(GLOBAL_STATE->transport, stratum_get_next_uid(GLOBAL_STATE), &GLOBAL_STATE->version_mask);
+        asic_capabilities_t capabilities = ASIC_get_capabilities(GLOBAL_STATE);
+        if (ASIC_capabilities_support_version_rolling(&capabilities)) {
+            STRATUM_V1_configure_version_rolling(
+                GLOBAL_STATE->transport, stratum_get_next_uid(GLOBAL_STATE),
+                capabilities.supported_version_mask);
+        } else {
+            GLOBAL_STATE->version_mask = 0;
+            GLOBAL_STATE->new_stratum_version_rolling_msg = false;
+        }
 
         // mining.subscribe - ID: 2
         STRATUM_V1_subscribe(GLOBAL_STATE->transport, stratum_get_next_uid(GLOBAL_STATE), GLOBAL_STATE->DEVICE_CONFIG.family.asic.name);
@@ -362,15 +370,25 @@ void stratum_v1_task(void *pvParameters)
                     break;
 
                 case MINING_SET_VERSION_MASK:
-                    ESP_LOGI(TAG, "Set version mask: %08lx", stratum_api_v1_message.version_mask);
-                    GLOBAL_STATE->version_mask = stratum_api_v1_message.version_mask;
-                    GLOBAL_STATE->new_stratum_version_rolling_msg = true;
+                    if (ASIC_capabilities_support_version_rolling(&capabilities)) {
+                        GLOBAL_STATE->version_mask =
+                            stratum_api_v1_message.version_mask &
+                            capabilities.supported_version_mask;
+                        ESP_LOGI(TAG, "Set version mask: %08lx", GLOBAL_STATE->version_mask);
+                        GLOBAL_STATE->new_stratum_version_rolling_msg = true;
+                    } else {
+                        ESP_LOGW(TAG, "Ignoring version mask for ASIC without version rolling");
+                    }
                     break;
 
                 case STRATUM_RESULT_CONFIGURE:
-                    if (stratum_api_v1_message.response_success) {
-                        ESP_LOGI(TAG, "Configure result accepted, version mask: %08lx", stratum_api_v1_message.version_mask);
-                        GLOBAL_STATE->version_mask = stratum_api_v1_message.version_mask;
+                    if (!ASIC_capabilities_support_version_rolling(&capabilities)) {
+                        ESP_LOGW(TAG, "Ignoring version-rolling result for unsupported capability");
+                    } else if (stratum_api_v1_message.response_success) {
+                        GLOBAL_STATE->version_mask =
+                            stratum_api_v1_message.version_mask &
+                            capabilities.supported_version_mask;
+                        ESP_LOGI(TAG, "Configure result accepted, version mask: %08lx", GLOBAL_STATE->version_mask);
                         GLOBAL_STATE->new_stratum_version_rolling_msg = true;
                         protocol_coordinator_notify_success();
                     } else {

@@ -8,6 +8,7 @@ SRCS
     "crc.c"
     "asic_common.c"
     "asic.c"
+    "asic_capabilities.c"
     "bm_job_builder.c"
     "bm_job_slot.c"
     "bm_result.c"

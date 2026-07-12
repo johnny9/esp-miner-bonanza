@@ -13,6 +13,14 @@
 
 static const char *TAG = "asic";
 
+asic_capabilities_t ASIC_get_capabilities(const GlobalState *GLOBAL_STATE)
+{
+    uint16_t chip_id = GLOBAL_STATE == NULL
+        ? 0
+        : GLOBAL_STATE->DEVICE_CONFIG.family.asic.chip_id;
+    return ASIC_capabilities_for_chip_id(chip_id);
+}
+
 uint8_t ASIC_init(GlobalState * GLOBAL_STATE)
 {
     ESP_LOGI(TAG, "Initializing %dx %s", GLOBAL_STATE->DEVICE_CONFIG.family.asic_count, GLOBAL_STATE->DEVICE_CONFIG.family.asic.name);

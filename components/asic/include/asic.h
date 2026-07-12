@@ -4,6 +4,9 @@
 #include <esp_err.h>
 #include "global_state.h"
 #include "asic_common.h"
+#include "asic_capabilities.h"
+
+asic_capabilities_t ASIC_get_capabilities(const GlobalState *GLOBAL_STATE);
 
 uint8_t ASIC_init(GlobalState * GLOBAL_STATE);
 task_result * ASIC_process_work(GlobalState * GLOBAL_STATE);

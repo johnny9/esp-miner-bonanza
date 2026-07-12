@@ -18,6 +18,7 @@
 #include "libbase58.h"
 #include "device_config.h"
 #include "coinbase_decoder.h"
+#include "asic.h"
 #include "esp_heap_caps.h"
 #include "esp_psram.h"
 
@@ -80,12 +81,15 @@ static sv2_channel_type_t sv2_select_channel_type(GlobalState *GLOBAL_STATE, boo
     NvsConfigKey key = use_fallback ? NVS_CONFIG_FALLBACK_SV2_CHANNEL_TYPE
                                     : NVS_CONFIG_SV2_CHANNEL_TYPE;
     char *cfg_str = nvs_config_get_string(key);
-    sv2_channel_type_t type = SV2_CHANNEL_EXTENDED;  // default, and forced for BM1397
+    asic_capabilities_t capabilities = ASIC_get_capabilities(GLOBAL_STATE);
+    sv2_channel_type_t type = SV2_CHANNEL_EXTENDED;
     if (cfg_str) {
         sv2_channel_type_t parsed = sv2_channel_type_from_string(cfg_str);
         if (parsed == SV2_CHANNEL_STANDARD) {
-            if (GLOBAL_STATE->DEVICE_CONFIG.family.asic.id != BM1397) {
+            if (ASIC_capabilities_support_static_work(&capabilities)) {
                 type = SV2_CHANNEL_STANDARD;
+            } else {
+                ESP_LOGW(TAG, "ASIC requires periodic fresh work; using extended channel");
             }
         } else if (parsed == SV2_CHANNEL_UNKNOWN && cfg_str[0] != '\0') {
             ESP_LOGW(TAG, "Invalid SV2 channel type in NVS: '%s', defaulting to extended", cfg_str);
@@ -569,9 +573,10 @@ void stratum_v2_task(void *pvParameters)
         GLOBAL_STATE->stratum_queue.free_fn = free;
     }
 
-    // Set default version mask for version rolling
-    GLOBAL_STATE->version_mask = STRATUM_DEFAULT_VERSION_MASK;
-    GLOBAL_STATE->new_stratum_version_rolling_msg = true;
+    asic_capabilities_t capabilities = ASIC_get_capabilities(GLOBAL_STATE);
+    GLOBAL_STATE->version_mask = capabilities.supported_version_mask;
+    GLOBAL_STATE->new_stratum_version_rolling_msg =
+        ASIC_capabilities_support_version_rolling(&capabilities);
 
     // Heap-allocate sv2_conn to avoid dangling pointer after task exit
     sv2_conn_t *conn = calloc(1, sizeof(sv2_conn_t));

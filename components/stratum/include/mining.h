@@ -3,6 +3,8 @@
 
 #include "stratum_api.h"
 
+// Temporary Bitmain-family work representation consumed by the BM13xx drivers.
+// This is intentionally not a generic ASIC work contract.
 typedef struct
 {
     uint32_t version;

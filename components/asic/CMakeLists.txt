@@ -8,6 +8,9 @@ SRCS
     "crc.c"
     "asic_common.c"
     "asic.c"
+    "bm_job_builder.c"
+    "bm_job_slot.c"
+    "bm_result.c"
     "frequency_transition_bmXX.c"
     "pll.c"
 
@@ -18,6 +21,7 @@ REQUIRES
     "freertos"
     "driver"
     "stratum"
+    "stratum_v2"
     "tcp_transport"
 )
 

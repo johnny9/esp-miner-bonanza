@@ -1,209 +1,117 @@
-#include <string.h>
+#include "asic.h"
 
 #include <esp_log.h>
 
-#include "bm1397.h"
-#include "bm1366.h"
-#include "bm1368.h"
-#include "bm1370.h"
-
-#include "asic.h"
-#include "bm_result.h"
+#include "asic_driver.h"
 #include "device_config.h"
 #include "frequency_transition_bmXX.h"
 
 static const char *TAG = "asic";
 
-asic_capabilities_t ASIC_get_capabilities(const GlobalState *GLOBAL_STATE)
+static const asic_driver_t *active_driver(const GlobalState *state)
 {
-    uint16_t chip_id = GLOBAL_STATE == NULL
-        ? 0
-        : GLOBAL_STATE->DEVICE_CONFIG.family.asic.chip_id;
-    return ASIC_capabilities_for_chip_id(chip_id);
+    if (state == NULL) return NULL;
+    return asic_driver_for_id(state->DEVICE_CONFIG.family.asic.id);
 }
 
-uint8_t ASIC_init(GlobalState * GLOBAL_STATE)
+asic_capabilities_t ASIC_get_capabilities(const GlobalState *state)
 {
-    ESP_LOGI(TAG, "Initializing %dx %s", GLOBAL_STATE->DEVICE_CONFIG.family.asic_count, GLOBAL_STATE->DEVICE_CONFIG.family.asic.name);
-    switch (GLOBAL_STATE->DEVICE_CONFIG.family.asic.id) {
-        case BM1397:
-            return BM1397_init(GLOBAL_STATE);
-        case BM1366:
-            return BM1366_init(GLOBAL_STATE);
-        case BM1368:
-            return BM1368_init(GLOBAL_STATE);
-        case BM1370:
-            return BM1370_init(GLOBAL_STATE);
+    const asic_driver_t *driver = active_driver(state);
+    return ASIC_capabilities_for_chip_id(driver ? driver->chip_id : 0);
+}
+
+uint8_t ASIC_init(GlobalState *state)
+{
+    const asic_driver_t *driver = active_driver(state);
+    if (driver == NULL || driver->ops.init == NULL) {
+        ESP_LOGE(TAG, "Unknown ASIC id %d",
+                 state ? state->DEVICE_CONFIG.family.asic.id : -1);
+        return 0;
     }
-    ESP_LOGE(TAG, "Unknown ASIC id %d", GLOBAL_STATE->DEVICE_CONFIG.family.asic.id);
-    return 0;
+    ESP_LOGI(TAG, "Initializing %dx %s",
+             state->DEVICE_CONFIG.family.asic_count, driver->name);
+    return driver->ops.init(state);
 }
 
-asic_event_t * ASIC_process_work(GlobalState * GLOBAL_STATE)
+asic_event_t *ASIC_process_work(GlobalState *state)
 {
-    task_result *result = NULL;
-    switch (GLOBAL_STATE->DEVICE_CONFIG.family.asic.id) {
-        case BM1397:
-            result = BM1397_process_work(GLOBAL_STATE);
-            break;
-        case BM1366:
-            result = BM1366_process_work(GLOBAL_STATE);
-            break;
-        case BM1368:
-            result = BM1368_process_work(GLOBAL_STATE);
-            break;
-        case BM1370:
-            result = BM1370_process_work(GLOBAL_STATE);
-            break;
-        default:
-            ESP_LOGE(TAG, "Unknown ASIC id %d — cannot process work", GLOBAL_STATE->DEVICE_CONFIG.family.asic.id);
-            return NULL;
+    const asic_driver_t *driver = active_driver(state);
+    if (driver == NULL || driver->ops.process_work == NULL) return NULL;
+    return driver->ops.process_work(state);
+}
+
+int ASIC_set_max_baud(GlobalState *state)
+{
+    const asic_driver_t *driver = active_driver(state);
+    return driver != NULL && driver->ops.set_max_baud != NULL
+        ? driver->ops.set_max_baud() : 0;
+}
+
+bool ASIC_send_work(GlobalState *state, const mining_template_t *template)
+{
+    const asic_driver_t *driver = active_driver(state);
+    if (driver == NULL || driver->ops.send_work == NULL) {
+        ESP_LOGE(TAG, "No work operation for ASIC id %d",
+                 state ? state->DEVICE_CONFIG.family.asic.id : -1);
+        return false;
     }
-
-    if (result == NULL) return NULL;
-
-    static asic_event_t event;
-    return bm_result_to_event(result, &event) ? &event : NULL;
+    return driver->ops.send_work(state, template);
 }
 
-int ASIC_set_max_baud(GlobalState * GLOBAL_STATE)
+void ASIC_set_version_mask(GlobalState *state, uint32_t mask)
 {
-    switch (GLOBAL_STATE->DEVICE_CONFIG.family.asic.id) {
-        case BM1397:
-            return BM1397_set_max_baud();
-        case BM1366:
-            return BM1366_set_max_baud();
-        case BM1368:
-            return BM1368_set_max_baud();
-        case BM1370:
-            return BM1370_set_max_baud();
-    }
-    ESP_LOGE(TAG, "Unknown ASIC id %d — cannot set max baud", GLOBAL_STATE->DEVICE_CONFIG.family.asic.id);
-    return 0;
-}
-
-void ASIC_send_work(GlobalState * GLOBAL_STATE, void * next_job)
-{
-    switch (GLOBAL_STATE->DEVICE_CONFIG.family.asic.id) {
-        case BM1397:
-            BM1397_send_work(GLOBAL_STATE, next_job);
-            break;
-        case BM1366:
-            BM1366_send_work(GLOBAL_STATE, next_job);
-            break;
-        case BM1368:
-            BM1368_send_work(GLOBAL_STATE, next_job);
-            break;
-        case BM1370:
-            BM1370_send_work(GLOBAL_STATE, next_job);
-            break;
-        default:
-            ESP_LOGE(TAG, "Unknown ASIC id %d — cannot send work", GLOBAL_STATE->DEVICE_CONFIG.family.asic.id);
-            break;
+    const asic_driver_t *driver = active_driver(state);
+    if (driver != NULL && driver->ops.set_version_mask != NULL) {
+        driver->ops.set_version_mask(mask);
     }
 }
 
-void ASIC_set_version_mask(GlobalState * GLOBAL_STATE, uint32_t mask)
+void ASIC_set_frequency(GlobalState *state)
 {
-    switch (GLOBAL_STATE->DEVICE_CONFIG.family.asic.id) {
-        case BM1397:
-            BM1397_set_version_mask(mask);
-            break;
-        case BM1366:
-            BM1366_set_version_mask(mask);
-            break;
-        case BM1368:
-            BM1368_set_version_mask(mask);
-            break;
-        case BM1370:
-            BM1370_set_version_mask(mask);
-            break;
-        default:
-            ESP_LOGE(TAG, "Unknown ASIC id %d — cannot set version mask", GLOBAL_STATE->DEVICE_CONFIG.family.asic.id);
-            break;
+    const asic_driver_t *driver = active_driver(state);
+    if (driver != NULL && driver->ops.set_hash_frequency != NULL) {
+        do_frequency_transition(state, driver->ops.set_hash_frequency);
     }
 }
 
-void ASIC_set_frequency(GlobalState * GLOBAL_STATE)
+void ASIC_set_nonce_space(GlobalState *state)
 {
-    switch (GLOBAL_STATE->DEVICE_CONFIG.family.asic.id) {
-        case BM1397:
-            do_frequency_transition(GLOBAL_STATE, BM1397_send_hash_frequency);
-            return;
-        case BM1366:
-            do_frequency_transition(GLOBAL_STATE, BM1366_send_hash_frequency);
-            return;
-        case BM1368:
-            do_frequency_transition(GLOBAL_STATE, BM1368_send_hash_frequency);
-            return;
-        case BM1370:
-            do_frequency_transition(GLOBAL_STATE, BM1370_send_hash_frequency);
-            return;
-    }
-    ESP_LOGE(TAG, "Unknown ASIC id %d — cannot set frequency", GLOBAL_STATE->DEVICE_CONFIG.family.asic.id);
+    const asic_driver_t *driver = active_driver(state);
+    if (driver == NULL || driver->ops.set_nonce_space == NULL) return;
+    driver->ops.set_nonce_space(
+        1.0, state->POWER_MANAGEMENT_MODULE.actual_frequency,
+        state->DEVICE_CONFIG.family.asic_count,
+        state->DEVICE_CONFIG.family.asic.core_count);
 }
 
-void ASIC_set_nonce_space(GlobalState * GLOBAL_STATE)
+double ASIC_get_asic_job_frequency_ms(GlobalState *state)
 {
-    float nonce_percent = 1.0;
-    int cores = GLOBAL_STATE->DEVICE_CONFIG.family.asic.core_count;
-    int asic_count = GLOBAL_STATE->DEVICE_CONFIG.family.asic_count;
-    float frequency = GLOBAL_STATE->POWER_MANAGEMENT_MODULE.actual_frequency;
+    const asic_driver_t *driver = active_driver(state);
+    if (driver == NULL) return 500;
 
-    switch (GLOBAL_STATE->DEVICE_CONFIG.family.asic.id) {
-        case BM1397:
-            return;
-        case BM1366:
-            BM1366_set_nonce_space(nonce_percent, frequency, asic_count, cores);
-            return;
-        case BM1368:
-            BM1368_set_nonce_space(nonce_percent, frequency, asic_count, cores);
-            return;
-        case BM1370:
-            BM1370_set_nonce_space(nonce_percent, frequency, asic_count, cores);
-            return;
+    int asic_count = state->DEVICE_CONFIG.family.asic_count;
+    int default_timeout =
+        state->DEVICE_CONFIG.family.asic.default_asic_timeout /
+        _next_power_of_two(asic_count);
+    asic_capabilities_t capabilities = ASIC_get_capabilities(state);
+    if (capabilities.work_refresh_policy ==
+        ASIC_WORK_REFRESH_DRIVER_MANAGED) {
+        return default_timeout;
     }
-    ESP_LOGE(TAG, "Unknown ASIC id %d — cannot set nonce space", GLOBAL_STATE->DEVICE_CONFIG.family.asic.id);
+    if (capabilities.version_rolling == ASIC_VERSION_ROLLING_MIDSTATE) {
+        return calculate_bm_timeout_ms(
+            state->POWER_MANAGEMENT_MODULE.frequency_value, asic_count,
+            state->DEVICE_CONFIG.family.asic.small_core_count,
+            state->DEVICE_CONFIG.family.asic.core_count,
+            capabilities.max_version_variants, 1.0, default_timeout);
+    }
+    return default_timeout;
 }
 
-double ASIC_get_asic_job_frequency_ms(GlobalState * GLOBAL_STATE)
+void ASIC_read_registers(GlobalState *state)
 {
-    float freq = GLOBAL_STATE->POWER_MANAGEMENT_MODULE.frequency_value;
-    int cores = GLOBAL_STATE->DEVICE_CONFIG.family.asic.core_count;
-    int small_cores = GLOBAL_STATE->DEVICE_CONFIG.family.asic.small_core_count;
-    int asic_count = GLOBAL_STATE->DEVICE_CONFIG.family.asic_count;
-    int asic_default_timeout_divided = GLOBAL_STATE->DEVICE_CONFIG.family.asic.default_asic_timeout / _next_power_of_two(asic_count);
-
-    switch (GLOBAL_STATE->DEVICE_CONFIG.family.asic.id) {
-        case BM1397:
-            // no version-rolling so same Nonce Space is splitted between Big Cores
-            return calculate_bm_timeout_ms(freq, asic_count, small_cores, cores, 4, 1.0, asic_default_timeout_divided);
-        case BM1366:
-        case BM1368:
-        case BM1370:
-            return asic_default_timeout_divided;
-    }
-    ESP_LOGE(TAG, "Unknown ASIC id %d — cannot compute job frequency", GLOBAL_STATE->DEVICE_CONFIG.family.asic.id);
-    return 500;
-}
-
-void ASIC_read_registers(GlobalState * GLOBAL_STATE)
-{
-    switch (GLOBAL_STATE->DEVICE_CONFIG.family.asic.id) {
-        case BM1397:
-            BM1397_read_registers();
-            break;
-        case BM1366:
-            BM1366_read_registers();
-            break;
-        case BM1368:
-            BM1368_read_registers();
-            break;
-        case BM1370:
-            BM1370_read_registers();
-            break;
-        default:
-            ESP_LOGE(TAG, "Unknown ASIC id %d — cannot read registers", GLOBAL_STATE->DEVICE_CONFIG.family.asic.id);
-            break;
+    const asic_driver_t *driver = active_driver(state);
+    if (driver != NULL && driver->ops.read_registers != NULL) {
+        driver->ops.read_registers();
     }
 }

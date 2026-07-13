@@ -1,17 +1,38 @@
 #include <string.h>
 #include <stdio.h>
 #include <limits.h>
+#include <stdlib.h>
 #include "mining.h"
 #include "utils.h"
 #include "mbedtls/sha256.h"
 #include "esp_log.h"
 
-void free_bm_job(bm_job *job)
+void mining_template_free(mining_template_t *template)
 {
-    if (job == NULL) return;
-    free(job->jobid);
-    free(job->extranonce2);
-    free(job);
+    if (template == NULL) return;
+    free(template->share.job_id);
+    free(template->share.extranonce2);
+    memset(template, 0, sizeof(*template));
+}
+
+bool mining_template_clone(const mining_template_t *source,
+                           mining_template_t *destination)
+{
+    if (source == NULL || destination == NULL) return false;
+
+    memset(destination, 0, sizeof(*destination));
+    *destination = *source;
+    destination->share.job_id = source->share.job_id
+        ? strdup(source->share.job_id) : NULL;
+    destination->share.extranonce2 = source->share.extranonce2
+        ? strdup(source->share.extranonce2) : NULL;
+    if ((source->share.job_id != NULL && destination->share.job_id == NULL) ||
+        (source->share.extranonce2 != NULL &&
+         destination->share.extranonce2 == NULL)) {
+        mining_template_free(destination);
+        return false;
+    }
+    return true;
 }
 
 void calculate_coinbase_tx_hash(const char *coinbase_1, const char *coinbase_2, const char *extranonce, const char *extranonce_2, uint8_t dest[32])
@@ -66,57 +87,6 @@ void calculate_merkle_root_hash(const uint8_t coinbase_tx_hash[32], const uint8_
     memcpy(dest, both_merkles, 32);
 }
 
-// take a mining_notify struct with ascii hex strings and convert it to a bm_job struct
-void construct_bm_job(mining_notify *params, const uint8_t merkle_root[32], const uint32_t version_mask, const double difficulty, bm_job *new_job)
-{
-    new_job->version = params->version;
-    new_job->target = params->target;
-    new_job->ntime = params->ntime;
-    new_job->starting_nonce = 0;
-    new_job->pool_diff = difficulty;
-    reverse_32bit_words(merkle_root, new_job->merkle_root);
-
-    uint8_t prev_block_hash[32];
-    hex2bin(params->prev_block_hash, prev_block_hash, 32);
-    reverse_endianness_per_word(prev_block_hash);
-    reverse_32bit_words(prev_block_hash, new_job->prev_block_hash);
-
-    // make the midstate hash
-    uint8_t midstate_data[64];
-
-    // copy 64 bytes header data into midstate (and deal with endianess)
-    memcpy(midstate_data, &new_job->version, 4);      // copy version
-    memcpy(midstate_data + 4, prev_block_hash, 32);   // copy prev_block_hash
-    memcpy(midstate_data + 36, merkle_root, 28);      // copy merkle_root
-
-    uint8_t midstate[32];
-    midstate_sha256_bin(midstate_data, 64, midstate); // make the midstate hash
-    reverse_32bit_words(midstate, new_job->midstate); // reverse the midstate words for the BM job packet
-
-    if (version_mask != 0)
-    {
-        uint32_t rolled_version = increment_bitmask(new_job->version, version_mask);
-        memcpy(midstate_data, &rolled_version, 4);
-        midstate_sha256_bin(midstate_data, 64, midstate);
-        reverse_32bit_words(midstate, new_job->midstate1);
-
-        rolled_version = increment_bitmask(rolled_version, version_mask);
-        memcpy(midstate_data, &rolled_version, 4);
-        midstate_sha256_bin(midstate_data, 64, midstate);
-        reverse_32bit_words(midstate, new_job->midstate2);
-
-        rolled_version = increment_bitmask(rolled_version, version_mask);
-        memcpy(midstate_data, &rolled_version, 4);
-        midstate_sha256_bin(midstate_data, 64, midstate);
-        reverse_32bit_words(midstate, new_job->midstate3);
-        new_job->num_midstates = 4;
-    }
-    else
-    {
-        new_job->num_midstates = 1;
-    }
-}
-
 void extranonce_2_generate(uint64_t extranonce_2, uint32_t length, char dest[static length * 2 + 1])
 {
     // Allocate buffer to hold the extranonce_2 value in bytes
@@ -141,18 +111,19 @@ double hash_to_pdiff(const uint8_t hash[32])
 
 ///////cgminer nonce testing
 /* testing a nonce and return the diff - 0 means invalid */
-double test_nonce_value(const bm_job *job, const uint32_t nonce,
-                        const uint32_t final_ntime,
-                        const uint32_t final_version)
+double mining_test_nonce_value(const mining_template_t *template,
+                               uint32_t nonce, uint32_t final_ntime,
+                               uint32_t final_version)
 {
+    if (template == NULL) return 0;
     uint8_t header[80];
 
     // copy data from job to header
     memcpy(header, &final_version, 4);
-    reverse_32bit_words(job->prev_block_hash, header + 4);
-    reverse_32bit_words(job->merkle_root, header + 36);
+    reverse_32bit_words(template->prev_block_hash, header + 4);
+    reverse_32bit_words(template->merkle_root, header + 36);
     memcpy(header + 68, &final_ntime, 4);
-    memcpy(header + 72, &job->target, 4);
+    memcpy(header + 72, &template->target, 4);
     memcpy(header + 76, &nonce, 4);
 
     uint8_t hash_result[32];

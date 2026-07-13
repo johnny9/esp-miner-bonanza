@@ -34,6 +34,10 @@ typedef struct {
     uint8_t asic_index;
     uint8_t core_id;
     uint8_t small_core_id;
+    uint16_t engine_id;
+    uint8_t sequence_id;
+    uint8_t micro_job_id;
+    uint32_t generation;
 } asic_result_t;
 
 typedef struct {

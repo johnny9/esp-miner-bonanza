@@ -5,7 +5,7 @@
 #include <string.h>
 
 #include "asic.h"
-#include "bm_result.h"
+#include "asic_result_handler.h"
 #include "esp_log.h"
 #include "freertos/task.h"
 #include "global_state.h"
@@ -39,7 +39,8 @@ static void record_self_test(void *context, double nonce_diff)
     self_test_record_nonce(callback_context->state, nonce_diff);
 }
 
-static bool sv1_transport_ready(void *context, const bm_share_submission *share)
+static bool sv1_transport_ready(void *context,
+                                const asic_share_submission_t *share)
 {
     result_callback_context *callback_context = context;
     GlobalState *state = callback_context->state;
@@ -56,7 +57,7 @@ static bool sv1_transport_ready(void *context, const bm_share_submission *share)
     return ready;
 }
 
-static int submit_sv1(void *context, const bm_share_submission *share)
+static int submit_sv1(void *context, const asic_share_submission_t *share)
 {
     result_callback_context *callback_context = context;
     GlobalState *state = callback_context->state;
@@ -66,7 +67,7 @@ static int submit_sv1(void *context, const bm_share_submission *share)
     if (transport == NULL) return -1;
     uint64_t sent_time_us = 0;
     int ret = STRATUM_V1_submit_share(transport, uid, share->username,
-                                      share->jobid, share->extranonce2,
+                                      share->job_id, share->extranonce2,
                                       share->ntime, share->nonce,
                                       share->version_bits, &sent_time_us);
     if (ret < 0) {
@@ -81,12 +82,13 @@ static int submit_sv1(void *context, const bm_share_submission *share)
     return ret;
 }
 
-static int submit_sv2_standard(void *context, const bm_share_submission *share)
+static int submit_sv2_standard(void *context,
+                               const asic_share_submission_t *share)
 {
     GlobalState *state = ((result_callback_context *)context)->state;
     int ret = stratum_v2_submit_share(state, share->numeric_job_id,
                                       share->nonce, share->ntime,
-                                      share->rolled_version);
+                                      share->final_version);
     if (ret < 0) {
         ESP_LOGW(TAG, "Failed to submit SV2 share (ret=%d, errno=%d: %s)",
                  ret, errno, strerror(errno));
@@ -94,12 +96,13 @@ static int submit_sv2_standard(void *context, const bm_share_submission *share)
     return ret;
 }
 
-static int submit_sv2_extended(void *context, const bm_share_submission *share)
+static int submit_sv2_extended(void *context,
+                               const asic_share_submission_t *share)
 {
     GlobalState *state = ((result_callback_context *)context)->state;
     int ret = stratum_v2_submit_share_extended(
         state, share->numeric_job_id, share->nonce, share->ntime,
-        share->rolled_version, share->extranonce2_bin, share->extranonce2_len);
+        share->final_version, share->extranonce2_bin, share->extranonce2_len);
     if (ret < 0) {
         ESP_LOGW(TAG, "Failed to submit SV2 share (ret=%d, errno=%d: %s)",
                  ret, errno, strerror(errno));
@@ -107,24 +110,25 @@ static int submit_sv2_extended(void *context, const bm_share_submission *share)
     return ret;
 }
 
-static void account_share(void *context, const bm_share_submission *share)
+static void account_share(void *context,
+                          const asic_share_submission_t *share)
 {
     GlobalState *state = ((result_callback_context *)context)->state;
     const asic_result_t *result = share->result;
     ESP_LOGI(TAG,
              "ID: %s, ASIC nr: %d, Core: %d/%d, ver: %08" PRIX32
              " Nonce %08" PRIX32 " diff %.1f of %g.",
-             share->jobid, result->asic_index, result->core_id,
+             share->job_id, result->asic_index, result->core_id,
              result->small_core_id, result->final_version, result->nonce,
-             share->nonce_diff, share->pool_diff);
+             share->nonce_diff, share->pool_difficulty);
 
     SYSTEM_notify_found_nonce(state, share->nonce_diff, share->target);
     scoreboard_add(&state->SYSTEM_MODULE.scoreboard, share->nonce_diff,
-                   share->jobid, share->extranonce2, share->ntime,
+                   share->job_id, share->extranonce2, share->ntime,
                    share->nonce, share->version_bits);
 }
 
-static const bm_result_callbacks RESULT_CALLBACKS = {
+static const asic_result_callbacks_t RESULT_CALLBACKS = {
     .record_self_test = record_self_test,
     .sv1_transport_ready = sv1_transport_ready,
     .submit_sv1 = submit_sv1,
@@ -133,36 +137,19 @@ static const bm_result_callbacks RESULT_CALLBACKS = {
     .account_share = account_share,
 };
 
-static bm_result_status_t handle_result(GlobalState *state,
-                                        const asic_result_t *result)
+static asic_result_status_t handle_result(GlobalState *state,
+                                          const asic_result_t *result)
 {
     result_callback_context callback_context = {.state = state};
-    bm_result_protocol_t protocol = BM_RESULT_PROTOCOL_SV1;
-    uint8_t extranonce2_len = 0;
-    if (state->stratum_protocol == STRATUM_PROTOCOL_V2) {
-        if (stratum_v2_is_extended_channel(state)) {
-            protocol = BM_RESULT_PROTOCOL_SV2_EXTENDED;
-            if (state->sv2_conn != NULL) {
-                extranonce2_len = state->sv2_conn->extranonce_size;
-            }
-        } else {
-            protocol = BM_RESULT_PROTOCOL_SV2_STANDARD;
-        }
-    }
-
-    bm_result_context context = {
-        .valid_jobs_lock = &state->valid_jobs_lock,
-        .valid_jobs = state->valid_jobs,
-        .active_jobs = state->ASIC_TASK_MODULE.active_jobs,
-        .protocol = protocol,
+    asic_result_context_t context = {
+        .job_store = &state->asic_job_store,
         .self_test = state->SELF_TEST_MODULE.is_active,
         .username = state->SYSTEM_MODULE.is_using_fallback
                         ? state->SYSTEM_MODULE.fallback_pool_user
                         : state->SYSTEM_MODULE.pool_user,
-        .sv2_extranonce2_len = extranonce2_len,
         .callback_context = &callback_context,
     };
-    return bm_result_handle(result, &context, &RESULT_CALLBACKS);
+    return asic_result_handle(result, &context, &RESULT_CALLBACKS);
 }
 
 void ASIC_result_task(void *pvParameters)
@@ -189,7 +176,7 @@ void ASIC_result_task(void *pvParameters)
         }
 
         const asic_result_t *result = &event->data.share;
-        if (handle_result(state, result) == BM_RESULT_REJECTED_JOB) {
+        if (handle_result(state, result) == ASIC_RESULT_REJECTED_WORK) {
             ESP_LOGW(TAG, "Invalid work result found, 0x%" PRIX64,
                      result->work_handle);
         }

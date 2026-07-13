@@ -15,6 +15,7 @@
 #include "display.h"
 #include "scoreboard.h"
 #include "esp_transport.h"
+#include "asic_job_store.h"
 
 typedef enum {
     STRATUM_PROTOCOL_UNKNOWN = 0,
@@ -139,17 +140,11 @@ typedef struct
 
 typedef struct
 {
-    // ASIC may not return the nonce in the same order as the jobs were sent
-    // it also may return a previous nonce under some circumstances
-    // so we keep a list of jobs indexed by the job id
-    bm_job **active_jobs;
-    // Current job to be processed (replaces ASIC_jobs_queue)
-    bm_job *current_job;
     //semaphone
     SemaphoreHandle_t semaphore;
 } AsicTaskModule;
 
-typedef struct
+typedef struct GlobalState
 {
     work_queue stratum_queue;
 
@@ -164,8 +159,7 @@ typedef struct
     char * extranonce_str;
     int extranonce_2_len;
 
-    uint8_t * valid_jobs;
-    pthread_mutex_t valid_jobs_lock;
+    asic_job_store_t asic_job_store;
 
     double pool_difficulty;
     bool new_set_mining_difficulty_msg;

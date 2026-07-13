@@ -2,6 +2,7 @@
 #define BM1370_H_
 
 #include "asic_common.h"
+#include "bm_job.h"
 #include "mining.h"
 
 #define BM1370_SERIALTX_DEBUG false
@@ -22,7 +23,8 @@ typedef struct __attribute__((__packed__))
 } BM1370_job;
 
 uint8_t BM1370_init(void * GLOBAL_STATE);
-void BM1370_send_work(void * GLOBAL_STATE, bm_job * next_bm_job);
+bool BM1370_send_work(void *GLOBAL_STATE, const bm_job *job,
+                      const mining_template_t *template);
 void BM1370_set_version_mask(uint32_t version_mask);
 int BM1370_set_max_baud(void);
 int BM1370_set_default_baud(void);

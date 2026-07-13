@@ -257,7 +257,8 @@ int BM1397_set_max_baud(void)
 
 static uint8_t id = 0;
 
-void BM1397_send_work(void *pvParameters, bm_job *next_bm_job)
+bool BM1397_send_work(void *pvParameters, const bm_job *next_bm_job,
+                      const mining_template_t *template)
 {
     GlobalState *GLOBAL_STATE = (GlobalState *)pvParameters;
 
@@ -282,24 +283,18 @@ void BM1397_send_work(void *pvParameters, bm_job *next_bm_job)
         memcpy(job.midstate3, next_bm_job->midstate3, 32);
     }
 
-    // Hold valid_jobs_lock across the free + reassignment so the result task
-    // (which snapshots active_jobs[job_id] under the same lock) can never observe
-    // or copy a slot we are freeing/replacing here. valid_jobs is set inside the
-    // same critical section so validity and the pointer stay consistent.
-    pthread_mutex_lock(&GLOBAL_STATE->valid_jobs_lock);
-    if (GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[job.job_id] != NULL)
-    {
-        free_bm_job(GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[job.job_id]);
+    if (!asic_job_store_store_slot(&GLOBAL_STATE->asic_job_store, job.job_id,
+                                   template, NULL)) {
+        ESP_LOGE(TAG, "Unable to store work slot 0x%02X", job.job_id);
+        return false;
     }
-    GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[job.job_id] = next_bm_job;
-    GLOBAL_STATE->valid_jobs[job.job_id] = 1;
-    pthread_mutex_unlock(&GLOBAL_STATE->valid_jobs_lock);
 
     #if BM1397_DEBUG_JOBS
     ESP_LOGI(TAG, "Send Job: %02X", job.job_id);
     #endif
 
     _send_BM1397((TYPE_JOB | GROUP_SINGLE | CMD_WRITE), (uint8_t *)&job, sizeof(job_packet), BM1397_DEBUG_WORK);
+    return true;
 }
 
 task_result *BM1397_process_work(void *pvParameters)
@@ -332,21 +327,16 @@ task_result *BM1397_process_work(void *pvParameters)
 
     GlobalState *GLOBAL_STATE = (GlobalState *)pvParameters;
 
-    // Read active_jobs[rx_job_id] under the lock: BM1397_send_work() can free and
-    // replace this slot from the create-jobs task, so dereferencing ->version /
-    // ->version_mask without the lock is a use-after-free. Snapshot both fields,
-    // then unlock and roll the version outside the critical section.
-    pthread_mutex_lock(&GLOBAL_STATE->valid_jobs_lock);
-    if (GLOBAL_STATE->valid_jobs[rx_job_id] == 0 || GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[rx_job_id] == NULL)
-    {
-        pthread_mutex_unlock(&GLOBAL_STATE->valid_jobs_lock);
+    mining_template_t template;
+    if (!asic_job_store_snapshot(&GLOBAL_STATE->asic_job_store, rx_job_id,
+                                 &template)) {
         ESP_LOGW(TAG, "Invalid job nonce found, id=%d", rx_job_id);
         return NULL;
     }
-    uint32_t base_version = GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[rx_job_id]->version;
-    uint32_t version_mask = GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[rx_job_id]->version_mask;
-    uint32_t final_ntime = GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[rx_job_id]->ntime;
-    pthread_mutex_unlock(&GLOBAL_STATE->valid_jobs_lock);
+    uint32_t base_version = template.version;
+    uint32_t version_mask = template.version_mask;
+    uint32_t final_ntime = template.ntime;
+    mining_template_free(&template);
 
     uint32_t rolled_version = base_version;
     for (int i = 0; i < rx_midstate_index; i++)

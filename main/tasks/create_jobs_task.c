@@ -11,12 +11,12 @@
 
 #include "asic.h"
 #include "system.h"
-#include "esp_heap_caps.h"
 #include "sv2_protocol.h"
 #include "stratum_api.h"
 #include "stratum_v2_task.h"
 #include "utils.h"
-#include "bm_job_builder.h"
+#include "mining_template.h"
+#include "sv2_mining_template.h"
 
 static const char *TAG = "create_jobs_task";
 
@@ -42,14 +42,6 @@ static void free_work_item(GlobalState *GLOBAL_STATE, void *work, stratum_protoc
 void create_jobs_task(void *pvParameters)
 {
     GlobalState *GLOBAL_STATE = (GlobalState *)pvParameters;
-
-    // Initialize ASIC task module (moved from ASIC_task)
-    GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs = heap_caps_malloc(sizeof(bm_job *) * 128, MALLOC_CAP_SPIRAM);
-    GLOBAL_STATE->valid_jobs = heap_caps_malloc(sizeof(uint8_t) * 128, MALLOC_CAP_SPIRAM);
-    for (int i = 0; i < 128; i++) {
-        GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[i] = NULL;
-        GLOBAL_STATE->valid_jobs[i] = 0;
-    }
 
     double difficulty = GLOBAL_STATE->pool_difficulty;
     void *current_work = NULL;
@@ -153,9 +145,11 @@ void create_jobs_task(void *pvParameters)
             // Re-sending the same job restarts the nonce search from 0 and
             // produces duplicate shares. Only send work on new jobs.
             // (V1 and SV2 extended are fine — extranonce_2 gives unique work each time.)
+            asic_capabilities_t capabilities =
+                ASIC_get_capabilities(GLOBAL_STATE);
             if (active_protocol == STRATUM_PROTOCOL_V2 &&
                 !stratum_v2_is_extended_channel(GLOBAL_STATE) &&
-                !bm_job_should_generate_sv2_standard(false)) {
+                ASIC_capabilities_support_static_work(&capabilities)) {
                 timeout_ms = ASIC_get_asic_job_frequency_ms(GLOBAL_STATE);
                 continue;
             }
@@ -190,58 +184,50 @@ void create_jobs_task(void *pvParameters)
 
 static void generate_work(GlobalState *GLOBAL_STATE, mining_notify *notification, uint64_t extranonce_2, double difficulty)
 {
-    bm_job *next_job = calloc(1, sizeof(*next_job));
-    if (next_job == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate memory for new job");
-        return;
-    }
-
-    if (!bm_job_build_sv1(notification, GLOBAL_STATE->extranonce_str,
-                          GLOBAL_STATE->extranonce_2_len, extranonce_2,
-                          GLOBAL_STATE->version_mask, difficulty, next_job)) {
+    mining_template_t template;
+    if (!mining_template_build_sv1(
+            notification, GLOBAL_STATE->extranonce_str,
+            GLOBAL_STATE->extranonce_2_len, extranonce_2,
+            GLOBAL_STATE->version_mask, difficulty, &template)) {
         ESP_LOGE(TAG, "Unable to build SV1 job (extranonce2 length %d)",
                  GLOBAL_STATE->extranonce_2_len);
-        free_bm_job(next_job);
         return;
     }
 
     // Check if ASIC is initialized before trying to send work
     if (!GLOBAL_STATE->ASIC_initalized) {
-        // Clean up the job since we're not sending it
-        // Note: This job was never stored in active_jobs, so it's safe to free
         ESP_LOGW(TAG, "ASIC not initialized, skipping job send");
-        free_bm_job(next_job);
+        mining_template_free(&template);
         return;
     }
 
-    ASIC_send_work(GLOBAL_STATE, next_job);
+    if (!ASIC_send_work(GLOBAL_STATE, &template)) {
+        ESP_LOGE(TAG, "ASIC rejected SV1 work");
+    }
+    mining_template_free(&template);
 }
 
-// Construct bm_job directly from SV2 fields (no coinbase/merkle computation needed).
-// Standard channels rely on version rolling for unique work — the ASIC rolls the
-// version bits using version_mask, giving different midstates per nonce search space.
+// Standard channels rely on the advertised ASIC rolling capabilities for
+// unique work rather than any chip-family-specific assumption here.
 static void generate_work_sv2(GlobalState *GLOBAL_STATE, sv2_job_t *sv2_job, double difficulty)
 {
-    bm_job *next_job = calloc(1, sizeof(*next_job));
-    if (next_job == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate memory for new SV2 job");
-        return;
-    }
-
-    if (!bm_job_build_sv2_standard(sv2_job, GLOBAL_STATE->version_mask,
-                                   difficulty, next_job)) {
+    mining_template_t template;
+    if (!mining_template_build_sv2_standard(
+            sv2_job, GLOBAL_STATE->version_mask, difficulty, &template)) {
         ESP_LOGE(TAG, "Unable to build SV2 standard job");
-        free_bm_job(next_job);
         return;
     }
 
     if (!GLOBAL_STATE->ASIC_initalized) {
         ESP_LOGW(TAG, "ASIC not initialized, skipping SV2 job send");
-        free_bm_job(next_job);
+        mining_template_free(&template);
         return;
     }
 
-    ASIC_send_work(GLOBAL_STATE, next_job);
+    if (!ASIC_send_work(GLOBAL_STATE, &template)) {
+        ESP_LOGE(TAG, "ASIC rejected SV2 standard work");
+    }
+    mining_template_free(&template);
 }
 
 // Extended channel work generation: compute coinbase hash from prefix+extranonce+suffix,
@@ -249,25 +235,22 @@ static void generate_work_sv2(GlobalState *GLOBAL_STATE, sv2_job_t *sv2_job, dou
 static void generate_work_sv2_ext(GlobalState *GLOBAL_STATE, sv2_ext_job_t *ext_job,
                                    double difficulty, uint64_t extranonce_2_counter)
 {
-    bm_job *next_job = calloc(1, sizeof(*next_job));
-    if (!next_job) {
-        ESP_LOGE(TAG, "Failed to allocate memory for SV2 ext job");
-        return;
-    }
-
-    if (!bm_job_build_sv2_extended(ext_job, GLOBAL_STATE->sv2_conn,
-                                   extranonce_2_counter, GLOBAL_STATE->version_mask,
-                                   difficulty, next_job)) {
+    mining_template_t template;
+    if (!mining_template_build_sv2_extended(
+            ext_job, GLOBAL_STATE->sv2_conn, extranonce_2_counter,
+            GLOBAL_STATE->version_mask, difficulty, &template)) {
         ESP_LOGE(TAG, "Unable to build SV2 extended job");
-        free_bm_job(next_job);
         return;
     }
 
     if (!GLOBAL_STATE->ASIC_initalized) {
         ESP_LOGW(TAG, "ASIC not initialized, skipping SV2 ext job send");
-        free_bm_job(next_job);
+        mining_template_free(&template);
         return;
     }
 
-    ASIC_send_work(GLOBAL_STATE, next_job);
+    if (!ASIC_send_work(GLOBAL_STATE, &template)) {
+        ESP_LOGE(TAG, "ASIC rejected SV2 extended work");
+    }
+    mining_template_free(&template);
 }

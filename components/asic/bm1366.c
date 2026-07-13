@@ -305,7 +305,8 @@ int BM1366_set_max_baud(void)
 
 static uint8_t id = 0;
 
-void BM1366_send_work(void * pvParameters, bm_job * next_bm_job)
+bool BM1366_send_work(void *pvParameters, const bm_job *next_bm_job,
+                      const mining_template_t *template)
 {
     GlobalState * GLOBAL_STATE = (GlobalState *) pvParameters;
 
@@ -320,17 +321,11 @@ void BM1366_send_work(void * pvParameters, bm_job * next_bm_job)
     memcpy(job.prev_block_hash, next_bm_job->prev_block_hash, 32);
     memcpy(&job.version, &next_bm_job->version, 4);
 
-    // Hold valid_jobs_lock across the free + reassignment so the result task
-    // (which snapshots active_jobs[job_id] under the same lock) can never observe
-    // or copy a slot we are freeing/replacing here. valid_jobs is set inside the
-    // same critical section so validity and the pointer stay consistent.
-    pthread_mutex_lock(&GLOBAL_STATE->valid_jobs_lock);
-    if (GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[job.job_id] != NULL) {
-        free_bm_job(GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[job.job_id]);
+    if (!asic_job_store_store_slot(&GLOBAL_STATE->asic_job_store, job.job_id,
+                                   template, NULL)) {
+        ESP_LOGE(TAG, "Unable to store work slot 0x%02X", job.job_id);
+        return false;
     }
-    GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[job.job_id] = next_bm_job;
-    GLOBAL_STATE->valid_jobs[job.job_id] = 1;
-    pthread_mutex_unlock(&GLOBAL_STATE->valid_jobs_lock);
 
     //debug sent jobs - this can get crazy if the interval is short
     #if BM1366_DEBUG_JOBS
@@ -338,6 +333,7 @@ void BM1366_send_work(void * pvParameters, bm_job * next_bm_job)
     #endif
 
     _send_BM1366((TYPE_JOB | GROUP_SINGLE | CMD_WRITE), (uint8_t *)&job, sizeof(BM1366_job), BM1366_DEBUG_WORK);
+    return true;
 }
 
 task_result * BM1366_process_work(void * pvParameters)
@@ -371,17 +367,16 @@ task_result * BM1366_process_work(void * pvParameters)
 
     GlobalState * GLOBAL_STATE = (GlobalState *) pvParameters;
 
-    // Read active_jobs[job_id] under the lock
-    pthread_mutex_lock(&GLOBAL_STATE->valid_jobs_lock);
-    if (GLOBAL_STATE->valid_jobs[job_id] == 0 || GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[job_id] == NULL) {
-        pthread_mutex_unlock(&GLOBAL_STATE->valid_jobs_lock);
+    mining_template_t template;
+    if (!asic_job_store_snapshot(&GLOBAL_STATE->asic_job_store, job_id,
+                                 &template)) {
         ESP_LOGW(TAG, "Invalid job nonce found, 0x%02X", job_id);
         return NULL;
     }
-    uint32_t base_version = GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[job_id]->version;
-    uint32_t final_ntime = GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[job_id]->ntime;
+    uint32_t base_version = template.version;
+    uint32_t final_ntime = template.ntime;
     uint32_t rolled_version = base_version | hardware_version_bits;
-    pthread_mutex_unlock(&GLOBAL_STATE->valid_jobs_lock);
+    mining_template_free(&template);
 
     result.job_id = job_id;
     result.nonce = asic_result.job.nonce;

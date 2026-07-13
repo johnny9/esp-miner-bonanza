@@ -142,7 +142,9 @@ void SYSTEM_init_system(GlobalState * GLOBAL_STATE)
     GLOBAL_STATE->sv2_conn = NULL;
 
     // Initialize mutexes
-    pthread_mutex_init(&GLOBAL_STATE->valid_jobs_lock, NULL);
+    if (!asic_job_store_init(&GLOBAL_STATE->asic_job_store)) {
+        ESP_LOGE(TAG, "Failed to initialize ASIC job store");
+    }
     GLOBAL_STATE->stratum_mux = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
 }
 
@@ -275,11 +277,7 @@ void SYSTEM_clean_jobs_queue(GlobalState * GLOBAL_STATE)
     ESP_LOGI(TAG, "Clean Jobs: clearing queue");
     queue_clear(&GLOBAL_STATE->stratum_queue);
 
-    pthread_mutex_lock(&GLOBAL_STATE->valid_jobs_lock);
-    for (int i = 0; i < 128; i = i + 4) {
-        GLOBAL_STATE->valid_jobs[i] = 0;
-    }
-    pthread_mutex_unlock(&GLOBAL_STATE->valid_jobs_lock);
+    asic_job_store_invalidate_all(&GLOBAL_STATE->asic_job_store);
 
     // Reset hashrate measurements to prevent a spike on reconnection
     hashrate_monitor_reset_measurements(GLOBAL_STATE);

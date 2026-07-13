@@ -316,7 +316,7 @@ task_result * BM1368_process_work(void * pvParameters)
     uint8_t asic_nr = (uint8_t)((nonce_h >> 17) & 0xff) / address_interval;
     uint8_t core_id = (uint8_t)((nonce_h >> 25) & 0x7f);
     uint8_t small_core_id = asic_result.job.id & 0x0f;
-    uint32_t version_bits = (ntohs(asic_result.job.version) << 13);
+    uint32_t hardware_version_bits = (ntohs(asic_result.job.version) << 13);
 
     GlobalState * GLOBAL_STATE = (GlobalState *) pvParameters;
 
@@ -327,12 +327,16 @@ task_result * BM1368_process_work(void * pvParameters)
         ESP_LOGW(TAG, "Invalid job nonce found, 0x%02X", job_id);
         return NULL;
     }
-    uint32_t rolled_version = GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[job_id]->version | version_bits;
+    uint32_t base_version = GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[job_id]->version;
+    uint32_t final_ntime = GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[job_id]->ntime;
+    uint32_t rolled_version = base_version | hardware_version_bits;
     pthread_mutex_unlock(&GLOBAL_STATE->valid_jobs_lock);
 
     result.job_id = job_id;
     result.nonce = asic_result.job.nonce;
+    result.ntime = final_ntime;
     result.rolled_version = rolled_version;
+    result.version_bits = rolled_version ^ base_version;
     result.asic_nr = asic_nr;
     result.core_id = core_id;
     result.small_core_id = small_core_id;

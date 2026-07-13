@@ -14,7 +14,7 @@ typedef enum {
 } bm_result_protocol_t;
 
 typedef struct {
-    const task_result *result;
+    const asic_result_t *result;
     const char *username;
     const char *jobid;
     const char *extranonce2;
@@ -43,7 +43,6 @@ typedef struct {
 } bm_result_context;
 
 typedef struct {
-    void (*monitor_register)(void *context, const task_result *result);
     void (*record_self_test)(void *context, double nonce_diff);
     bool (*sv1_transport_ready)(void *context, const bm_share_submission *share);
     int (*submit_sv1)(void *context, const bm_share_submission *share);
@@ -53,13 +52,14 @@ typedef struct {
 } bm_result_callbacks;
 
 typedef enum {
-    BM_RESULT_HANDLED_REGISTER,
     BM_RESULT_REJECTED_JOB,
     BM_RESULT_RECORDED_SELF_TEST,
     BM_RESULT_ACCOUNTED,
 } bm_result_status_t;
 
-bm_result_status_t bm_result_handle(const task_result *result,
+bool bm_result_to_event(const task_result *result, asic_event_t *event);
+
+bm_result_status_t bm_result_handle(const asic_result_t *result,
                                     const bm_result_context *context,
                                     const bm_result_callbacks *callbacks);
 

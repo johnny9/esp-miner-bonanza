@@ -19,6 +19,13 @@ static void assert_hex(const char *expected, const uint8_t *actual, size_t lengt
     TEST_ASSERT_EQUAL_UINT8_ARRAY(bytes, actual, length);
 }
 
+static void assert_u64(uint64_t expected, uint64_t actual)
+{
+    TEST_ASSERT_EQUAL_HEX32((uint32_t)(expected >> 32),
+                            (uint32_t)(actual >> 32));
+    TEST_ASSERT_EQUAL_HEX32((uint32_t)expected, (uint32_t)actual);
+}
+
 static void fill_sequence(uint8_t *dest, size_t length, uint8_t first)
 {
     for (size_t i = 0; i < length; ++i) dest[i] = first + i;
@@ -266,7 +273,6 @@ TEST_CASE("SV2 extended handles path bounds counter width and missing metadata",
 }
 
 typedef struct {
-    int register_count;
     int self_test_count;
     int ready_count;
     int sv1_count;
@@ -288,13 +294,6 @@ static void capture_share(callback_capture *capture,
              share->jobid ? share->jobid : "");
     snprintf(capture->extranonce2, sizeof(capture->extranonce2), "%s",
              share->extranonce2 ? share->extranonce2 : "");
-}
-
-static void cb_register(void *opaque, const task_result *result)
-{
-    callback_capture *capture = opaque;
-    capture->register_count++;
-    TEST_ASSERT_EQUAL(REGISTER_TOTAL_COUNT, result->register_type);
 }
 
 static void cb_self_test(void *opaque, double difficulty)
@@ -344,7 +343,6 @@ static void cb_account(void *opaque, const bm_share_submission *share)
 }
 
 static const bm_result_callbacks callbacks = {
-    .monitor_register = cb_register,
     .record_self_test = cb_self_test,
     .sv1_transport_ready = cb_ready,
     .submit_sv1 = cb_sv1,
@@ -398,37 +396,90 @@ static void result_fixture_destroy(result_fixture *fixture)
     pthread_mutex_destroy(&fixture->lock);
 }
 
-static task_result nonce_result(void)
+static asic_result_t nonce_result(void)
 {
-    return (task_result) {
-        .job_id = 8,
+    return (asic_result_t) {
+        .work_handle = 8,
         .nonce = 0x12345678,
-        .rolled_version = 0x20006004,
-        .register_type = REGISTER_INVALID,
-        .asic_nr = 3,
+        .final_ntime = 0x65010203,
+        .final_version = 0x20006004,
+        .version_bits = 0x00006000,
+        .asic_index = 3,
         .core_id = 4,
         .small_core_id = 5,
         .timestamp_us = 1000,
     };
 }
 
-TEST_CASE("Register events bypass all job and share handling", "[bitmain][result]")
+TEST_CASE("Bitmain adapter maps share results to the generic contract",
+          "[bitmain][result][contract]")
 {
-    callback_capture capture = {0};
-    bm_result_context context = {.callback_context = &capture};
-    task_result result = {.register_type = REGISTER_TOTAL_COUNT};
-    TEST_ASSERT_EQUAL(BM_RESULT_HANDLED_REGISTER,
-                      bm_result_handle(&result, &context, &callbacks));
-    TEST_ASSERT_EQUAL(1, capture.register_count);
-    TEST_ASSERT_EQUAL(0, capture.account_count);
-    TEST_ASSERT_EQUAL(0, capture.sv1_count);
+    task_result source = {
+        .job_id = 8,
+        .nonce = 0x12345678,
+        .ntime = 0x65010203,
+        .rolled_version = 0x20006004,
+        .version_bits = 0x00006000,
+        .asic_nr = 3,
+        .core_id = 4,
+        .small_core_id = 5,
+        .timestamp_us = 123456,
+    };
+    asic_event_t event;
+
+    TEST_ASSERT_TRUE(bm_result_to_event(&source, &event));
+    TEST_ASSERT_EQUAL(ASIC_EVENT_SHARE_RESULT, event.type);
+    assert_u64(8, event.data.share.work_handle);
+    TEST_ASSERT_EQUAL_HEX32(source.nonce, event.data.share.nonce);
+    TEST_ASSERT_EQUAL_HEX32(source.ntime, event.data.share.final_ntime);
+    TEST_ASSERT_EQUAL_HEX32(source.rolled_version,
+                            event.data.share.final_version);
+    TEST_ASSERT_EQUAL_HEX32(source.version_bits,
+                            event.data.share.version_bits);
+    assert_u64(source.timestamp_us, event.data.share.timestamp_us);
+    TEST_ASSERT_EQUAL_UINT8(source.asic_nr, event.data.share.asic_index);
+    TEST_ASSERT_EQUAL_UINT8(source.core_id, event.data.share.core_id);
+    TEST_ASSERT_EQUAL_UINT8(source.small_core_id,
+                            event.data.share.small_core_id);
+}
+
+TEST_CASE("Bitmain adapter keeps register events separate from shares",
+          "[bitmain][result][contract]")
+{
+    task_result source = {
+        .register_type = REGISTER_TOTAL_COUNT,
+        .asic_nr = 2,
+        .value = 1234,
+        .timestamp_us = 5678,
+    };
+    asic_event_t event;
+
+    TEST_ASSERT_TRUE(bm_result_to_event(&source, &event));
+    TEST_ASSERT_EQUAL(ASIC_EVENT_REGISTER_RESULT, event.type);
+    TEST_ASSERT_EQUAL(REGISTER_TOTAL_COUNT,
+                      event.data.register_result.register_type);
+    TEST_ASSERT_EQUAL_UINT8(2, event.data.register_result.asic_index);
+    TEST_ASSERT_EQUAL_UINT32(1234, event.data.register_result.value);
+    assert_u64(5678, event.data.register_result.timestamp_us);
+    TEST_ASSERT_FALSE(bm_result_to_event(NULL, &event));
+    TEST_ASSERT_FALSE(bm_result_to_event(&source, NULL));
 }
 
 TEST_CASE("Invalid and null Bitmain slots never submit", "[bitmain][result][slot]")
 {
     result_fixture fixture;
     result_fixture_init(&fixture, 0);
-    task_result result = nonce_result();
+    asic_result_t result = nonce_result();
+    TEST_ASSERT_EQUAL(BM_RESULT_REJECTED_JOB,
+                      bm_result_handle(NULL, &fixture.context, &callbacks));
+    TEST_ASSERT_EQUAL(BM_RESULT_REJECTED_JOB,
+                      bm_result_handle(&result, NULL, &callbacks));
+    TEST_ASSERT_EQUAL(BM_RESULT_REJECTED_JOB,
+                      bm_result_handle(&result, &fixture.context, NULL));
+    result.work_handle = BM_JOB_SLOT_COUNT;
+    TEST_ASSERT_EQUAL(BM_RESULT_REJECTED_JOB,
+                      bm_result_handle(&result, &fixture.context, &callbacks));
+    result.work_handle = 8;
     fixture.valid[8] = 0;
     TEST_ASSERT_EQUAL(BM_RESULT_REJECTED_JOB,
                       bm_result_handle(&result, &fixture.context, &callbacks));
@@ -445,7 +496,7 @@ TEST_CASE("Below difficulty is accounted but not submitted", "[bitmain][result]"
 {
     result_fixture fixture;
     result_fixture_init(&fixture, DBL_MAX);
-    task_result result = nonce_result();
+    asic_result_t result = nonce_result();
     TEST_ASSERT_EQUAL(BM_RESULT_ACCOUNTED,
                       bm_result_handle(&result, &fixture.context, &callbacks));
     TEST_ASSERT_EQUAL(0, fixture.capture.ready_count);
@@ -459,7 +510,7 @@ TEST_CASE("SV1 submission fields preserve username metadata and XOR version bits
 {
     result_fixture fixture;
     result_fixture_init(&fixture, 0);
-    task_result result = nonce_result();
+    asic_result_t result = nonce_result();
     bm_result_handle(&result, &fixture.context, &callbacks);
     TEST_ASSERT_EQUAL(1, fixture.capture.sv1_count);
     TEST_ASSERT_EQUAL_STRING("worker.name", fixture.capture.share.username);
@@ -474,11 +525,43 @@ TEST_CASE("SV1 submission fields preserve username metadata and XOR version bits
     result_fixture_destroy(&fixture);
 }
 
+TEST_CASE("Generic result supplies final timestamp version and version bits",
+          "[bitmain][result][contract]")
+{
+    result_fixture fixture;
+    result_fixture_init(&fixture, 0);
+    asic_result_t result = nonce_result();
+    result.final_ntime = 0x6501020a;
+    result.final_version = 0x20004004;
+    result.version_bits = 0x00004000;
+    double base_ntime_diff = test_nonce_value(
+        fixture.jobs[8], result.nonce, fixture.jobs[8]->ntime,
+        result.final_version);
+    double final_ntime_diff = test_nonce_value(
+        fixture.jobs[8], result.nonce, result.final_ntime,
+        result.final_version);
+
+    bm_result_handle(&result, &fixture.context, &callbacks);
+
+    TEST_ASSERT_EQUAL_UINT32(result.final_ntime,
+                             fixture.capture.share.ntime);
+    TEST_ASSERT_EQUAL_UINT32(result.final_version,
+                             fixture.capture.share.rolled_version);
+    TEST_ASSERT_EQUAL_UINT32(result.version_bits,
+                             fixture.capture.share.version_bits);
+    TEST_ASSERT_TRUE(base_ntime_diff != final_ntime_diff);
+    TEST_ASSERT_EQUAL_DOUBLE(final_ntime_diff,
+                             fixture.capture.share.nonce_diff);
+    TEST_ASSERT_EQUAL(1, fixture.capture.sv1_count);
+    TEST_ASSERT_EQUAL(1, fixture.capture.account_count);
+    result_fixture_destroy(&fixture);
+}
+
 TEST_CASE("SV2 standard and extended route exact share fields", "[bitmain][result][sv2]")
 {
     result_fixture fixture;
     result_fixture_init(&fixture, 0);
-    task_result result = nonce_result();
+    asic_result_t result = nonce_result();
 
     fixture.context.protocol = BM_RESULT_PROTOCOL_SV2_STANDARD;
     bm_result_handle(&result, &fixture.context, &callbacks);
@@ -486,7 +569,7 @@ TEST_CASE("SV2 standard and extended route exact share fields", "[bitmain][resul
     TEST_ASSERT_EQUAL_UINT32(42, fixture.capture.share.numeric_job_id);
     TEST_ASSERT_EQUAL_UINT32(result.nonce, fixture.capture.share.nonce);
     TEST_ASSERT_EQUAL_UINT32(0x65010203, fixture.capture.share.ntime);
-    TEST_ASSERT_EQUAL_UINT32(result.rolled_version,
+    TEST_ASSERT_EQUAL_UINT32(result.final_version,
                              fixture.capture.share.rolled_version);
 
     fixture.context.protocol = BM_RESULT_PROTOCOL_SV2_EXTENDED;
@@ -503,7 +586,7 @@ TEST_CASE("Self test records difficulty and bypasses accounting and submission",
     result_fixture fixture;
     result_fixture_init(&fixture, 0);
     fixture.context.self_test = true;
-    task_result result = nonce_result();
+    asic_result_t result = nonce_result();
     TEST_ASSERT_EQUAL(BM_RESULT_RECORDED_SELF_TEST,
                       bm_result_handle(&result, &fixture.context, &callbacks));
     TEST_ASSERT_EQUAL(1, fixture.capture.self_test_count);
@@ -519,7 +602,7 @@ TEST_CASE("Null SV1 transport drops pool share but keeps normal accounting",
     result_fixture fixture;
     result_fixture_init(&fixture, 0);
     fixture.capture.transport_ready = false;
-    task_result result = nonce_result();
+    asic_result_t result = nonce_result();
     bm_result_handle(&result, &fixture.context, &callbacks);
     TEST_ASSERT_EQUAL(1, fixture.capture.ready_count);
     TEST_ASSERT_EQUAL(0, fixture.capture.sv1_count);

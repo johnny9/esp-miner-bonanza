@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <inttypes.h>
 #include <lwip/tcpip.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,10 +25,11 @@ typedef struct {
     int sv1_uid;
 } result_callback_context;
 
-static void monitor_register(void *context, const task_result *result)
+static void monitor_register(GlobalState *state,
+                             const asic_register_result_t *result)
 {
-    GlobalState *state = ((result_callback_context *)context)->state;
-    hashrate_monitor_register_read(state, result->register_type, result->asic_nr,
+    hashrate_monitor_register_read(state, result->register_type,
+                                   result->asic_index,
                                    result->value, result->timestamp_us);
 }
 
@@ -47,8 +49,9 @@ static bool sv1_transport_ready(void *context, const bm_share_submission *share)
     taskEXIT_CRITICAL(&state->stratum_mux);
     bool ready = callback_context->sv1_transport != NULL;
     if (!ready) {
-        ESP_LOGW(TAG, "No stratum connection, dropping share (job 0x%02X)",
-                 share->result->job_id);
+        ESP_LOGW(TAG,
+                 "No stratum connection, dropping share (work 0x%" PRIX64 ")",
+                 share->result->work_handle);
     }
     return ready;
 }
@@ -107,12 +110,12 @@ static int submit_sv2_extended(void *context, const bm_share_submission *share)
 static void account_share(void *context, const bm_share_submission *share)
 {
     GlobalState *state = ((result_callback_context *)context)->state;
-    const task_result *result = share->result;
+    const asic_result_t *result = share->result;
     ESP_LOGI(TAG,
              "ID: %s, ASIC nr: %d, Core: %d/%d, ver: %08" PRIX32
              " Nonce %08" PRIX32 " diff %.1f of %g.",
-             share->jobid, result->asic_nr, result->core_id,
-             result->small_core_id, result->rolled_version, result->nonce,
+             share->jobid, result->asic_index, result->core_id,
+             result->small_core_id, result->final_version, result->nonce,
              share->nonce_diff, share->pool_diff);
 
     SYSTEM_notify_found_nonce(state, share->nonce_diff, share->target);
@@ -122,7 +125,6 @@ static void account_share(void *context, const bm_share_submission *share)
 }
 
 static const bm_result_callbacks RESULT_CALLBACKS = {
-    .monitor_register = monitor_register,
     .record_self_test = record_self_test,
     .sv1_transport_ready = sv1_transport_ready,
     .submit_sv1 = submit_sv1,
@@ -132,7 +134,7 @@ static const bm_result_callbacks RESULT_CALLBACKS = {
 };
 
 static bm_result_status_t handle_result(GlobalState *state,
-                                        const task_result *result)
+                                        const asic_result_t *result)
 {
     result_callback_context callback_context = {.state = state};
     bm_result_protocol_t protocol = BM_RESULT_PROTOCOL_SV1;
@@ -173,11 +175,23 @@ void ASIC_result_task(void *pvParameters)
             continue;
         }
 
-        task_result *result = ASIC_process_work(state);
-        if (result == NULL) continue;
+        asic_event_t *event = ASIC_process_work(state);
+        if (event == NULL) continue;
 
+        if (event->type == ASIC_EVENT_REGISTER_RESULT) {
+            monitor_register(state, &event->data.register_result);
+            continue;
+        }
+
+        if (event->type != ASIC_EVENT_SHARE_RESULT) {
+            ESP_LOGW(TAG, "Ignoring unknown ASIC event type %d", event->type);
+            continue;
+        }
+
+        const asic_result_t *result = &event->data.share;
         if (handle_result(state, result) == BM_RESULT_REJECTED_JOB) {
-            ESP_LOGW(TAG, "Invalid job nonce found, 0x%02X", result->job_id);
+            ESP_LOGW(TAG, "Invalid work result found, 0x%" PRIX64,
+                     result->work_handle);
         }
     }
 }

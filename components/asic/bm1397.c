@@ -343,10 +343,12 @@ task_result *BM1397_process_work(void *pvParameters)
         ESP_LOGW(TAG, "Invalid job nonce found, id=%d", rx_job_id);
         return NULL;
     }
-    uint32_t rolled_version = GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[rx_job_id]->version;
+    uint32_t base_version = GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[rx_job_id]->version;
     uint32_t version_mask = GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[rx_job_id]->version_mask;
+    uint32_t final_ntime = GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[rx_job_id]->ntime;
     pthread_mutex_unlock(&GLOBAL_STATE->valid_jobs_lock);
 
+    uint32_t rolled_version = base_version;
     for (int i = 0; i < rx_midstate_index; i++)
     {
         rolled_version = increment_bitmask(rolled_version, version_mask);
@@ -382,7 +384,9 @@ task_result *BM1397_process_work(void *pvParameters)
 
     result.job_id = rx_job_id;
     result.nonce = asic_result.job.nonce;
+    result.ntime = final_ntime;
     result.rolled_version = rolled_version;
+    result.version_bits = rolled_version ^ base_version;
     result.asic_nr = asic_nr;
     result.core_id = core_id;
     result.small_core_id = small_core_id;

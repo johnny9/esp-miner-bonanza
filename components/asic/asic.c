@@ -8,6 +8,7 @@
 #include "bm1370.h"
 
 #include "asic.h"
+#include "bm_result.h"
 #include "device_config.h"
 #include "frequency_transition_bmXX.h"
 
@@ -38,20 +39,31 @@ uint8_t ASIC_init(GlobalState * GLOBAL_STATE)
     return 0;
 }
 
-task_result * ASIC_process_work(GlobalState * GLOBAL_STATE)
+asic_event_t * ASIC_process_work(GlobalState * GLOBAL_STATE)
 {
+    task_result *result = NULL;
     switch (GLOBAL_STATE->DEVICE_CONFIG.family.asic.id) {
         case BM1397:
-            return BM1397_process_work(GLOBAL_STATE);
+            result = BM1397_process_work(GLOBAL_STATE);
+            break;
         case BM1366:
-            return BM1366_process_work(GLOBAL_STATE);
+            result = BM1366_process_work(GLOBAL_STATE);
+            break;
         case BM1368:
-            return BM1368_process_work(GLOBAL_STATE);
+            result = BM1368_process_work(GLOBAL_STATE);
+            break;
         case BM1370:
-            return BM1370_process_work(GLOBAL_STATE);
+            result = BM1370_process_work(GLOBAL_STATE);
+            break;
+        default:
+            ESP_LOGE(TAG, "Unknown ASIC id %d — cannot process work", GLOBAL_STATE->DEVICE_CONFIG.family.asic.id);
+            return NULL;
     }
-    ESP_LOGE(TAG, "Unknown ASIC id %d — cannot process work", GLOBAL_STATE->DEVICE_CONFIG.family.asic.id);
-    return NULL;
+
+    if (result == NULL) return NULL;
+
+    static asic_event_t event;
+    return bm_result_to_event(result, &event) ? &event : NULL;
 }
 
 int ASIC_set_max_baud(GlobalState * GLOBAL_STATE)

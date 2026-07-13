@@ -4,35 +4,25 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
+#include "asic_result.h"
 
 static const double NONCE_SPACE = 4294967296.0; //  2^32
 
-typedef enum
-{
-    REGISTER_INVALID = 0,
-    REGISTER_HASHRATE,       // hashrate register (BM1397)
-    REGISTER_TOTAL_COUNT,    // total counter (BM1366,BM1368,BM1370)
-    REGISTER_DOMAIN_0_COUNT, // domain counters (BM1366,BM1368,BM1370)
-    REGISTER_DOMAIN_1_COUNT,
-    REGISTER_DOMAIN_2_COUNT,
-    REGISTER_DOMAIN_3_COUNT,
-    REGISTER_ERROR_COUNT,    // error count register (all)
-    REGISTER_PLL_PARAM,      // PLL/clock config readback (BM1370)
-} register_type_t;
-
 typedef struct
 {
-    // -- job result response
+    // Transitional raw result used only by the current Bitmain drivers.
     uint8_t job_id;
     uint32_t nonce;
+    uint32_t ntime;
     uint32_t rolled_version;
-    // ---- register response
+    uint32_t version_bits;
+    // Register response.
     register_type_t register_type;
     uint8_t asic_nr;
     uint32_t value;
     uint8_t core_id;
     uint8_t small_core_id;
-    // ---- timestamp
+    // Receive timestamp.
     uint64_t timestamp_us;
 } task_result;
 

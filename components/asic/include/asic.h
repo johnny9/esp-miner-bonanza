@@ -9,7 +9,7 @@
 asic_capabilities_t ASIC_get_capabilities(const GlobalState *GLOBAL_STATE);
 
 uint8_t ASIC_init(GlobalState * GLOBAL_STATE);
-task_result * ASIC_process_work(GlobalState * GLOBAL_STATE);
+asic_event_t * ASIC_process_work(GlobalState * GLOBAL_STATE);
 int ASIC_set_max_baud(GlobalState * GLOBAL_STATE);
 void ASIC_send_work(GlobalState * GLOBAL_STATE, void * next_job);
 void ASIC_set_version_mask(GlobalState * GLOBAL_STATE, uint32_t mask);

@@ -45,7 +45,9 @@ void construct_bm_job(mining_notify *params, const uint8_t merkle_root[32], cons
 // and SV2 (target). Returns a double to preserve fractional difficulty.
 double hash_to_pdiff(const uint8_t hash[32]);
 
-double test_nonce_value(const bm_job *job, const uint32_t nonce, const uint32_t rolled_version);
+double test_nonce_value(const bm_job *job, const uint32_t nonce,
+                        const uint32_t final_ntime,
+                        const uint32_t final_version);
 
 void extranonce_2_generate(uint64_t extranonce_2, uint32_t length, char dest[static length * 2 + 1]);
 

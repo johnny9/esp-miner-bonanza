@@ -141,21 +141,17 @@ double hash_to_pdiff(const uint8_t hash[32])
 
 ///////cgminer nonce testing
 /* testing a nonce and return the diff - 0 means invalid */
-double test_nonce_value(const bm_job *job, const uint32_t nonce, const uint32_t rolled_version)
+double test_nonce_value(const bm_job *job, const uint32_t nonce,
+                        const uint32_t final_ntime,
+                        const uint32_t final_version)
 {
     uint8_t header[80];
 
-    // // TODO: use the midstate hash instead of hashing the whole header
-    // uint32_t rolled_version = job->version;
-    // for (int i = 0; i < midstate_index; i++) {
-    //     rolled_version = increment_bitmask(rolled_version, job->version_mask);
-    // }
-
     // copy data from job to header
-    memcpy(header, &rolled_version, 4);
+    memcpy(header, &final_version, 4);
     reverse_32bit_words(job->prev_block_hash, header + 4);
     reverse_32bit_words(job->merkle_root, header + 36);
-    memcpy(header + 68, &job->ntime, 4);
+    memcpy(header + 68, &final_ntime, 4);
     memcpy(header + 72, &job->target, 4);
     memcpy(header + 76, &nonce, 4);
 

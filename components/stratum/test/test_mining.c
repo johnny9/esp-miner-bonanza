@@ -1,5 +1,6 @@
 #include "unity.h"
 #include "mining.h"
+#include "stratum_api.h"
 #include "utils.h"
 
 #include <limits.h>
@@ -83,28 +84,6 @@ TEST_CASE("Validate another merkle root calculation", "[mining]")
     TEST_ASSERT_EQUAL_STRING("5cc58f5e84aafc740d521b92a7bf72f4e56c4cc3ad1c2159f1d094f97ac34eee", root_hash);
 }
 
-// Values calculated from esp-miner/components/stratum/test/verifiers/bm1397.py
-TEST_CASE("Validate bm job construction", "[mining]")
-{
-    mining_notify notify_message;
-    notify_message.prev_block_hash = "bf44fd3513dc7b837d60e5c628b572b448d204a8000007490000000000000000";
-    notify_message.version = 0x20000004;
-    notify_message.target = 0x1705dd01;
-    notify_message.ntime = 0x64658bd8;
-    uint8_t merkle_root[32];
-    hex2bin("cd1be82132ef0d12053dcece1fa0247fcfdb61d4dbd3eb32ea9ef9b4c604a846", merkle_root, 32);
-    bm_job job = { 0 };
-    construct_bm_job(&notify_message, merkle_root, 0, 1000, &job);
-
-    uint8_t expected_midstate_bin[32];
-    hex2bin("91DFEA528A9F73683D0D495DD6DD7415E1CA21CB411759E3E05D7D5FF285314D", expected_midstate_bin, 32);
-    // bytes are reversed for the midstate on the bm job command packet
-    uint8_t expected_midstate_bin_reversed[32];
-    reverse_32bit_words(expected_midstate_bin, expected_midstate_bin_reversed);
-    reverse_endianness_per_word(expected_midstate_bin_reversed);
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected_midstate_bin_reversed, job.midstate, 32);
-}
-
 TEST_CASE("Validate version mask incrementing", "[mining]")
 {
     uint32_t version = 0x20000004;
@@ -119,33 +98,6 @@ TEST_CASE("Validate version mask incrementing", "[mining]")
     rolled_version = increment_bitmask(rolled_version, version_mask);
     TEST_ASSERT_EQUAL_UINT32(0x20000404, rolled_version);
 }
-
-// Values calculated from esp-miner/components/stratum/test/verifiers/bm1397.py
-// TEST_CASE("Validate bm job construction 2", "[mining]")
-// {
-//     const char * notify_json_str = "{\"id\":null,\"method\":\"mining.notify\","
-//     "\"params\":[\"21554471e8\",\"8bc8707eb169ad3bda101ae60c8d48bd00aff68a00006c8b0000000000000000\",\"01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff4b03d8130cfabe6d6db0ba74b36edc62c9268c945b53ebf1a7865b88bcdd40235a7a63d0f5ed5b6c400100000000000000\",\"e8714455212f736c7573682f00000000033de04728000000001976a9147c154ed1dc59609e3d26abb2df2ea3d587cd8c4188ac00000000000000002c6a4c2952534b424c4f434b3ae8c3686251b5ced65b6a65ea3e0491ac2975cd87c02b0640d3ec3c20005167770000000000000000266a24aa21a9eddffbecb5ef0a46324a3dd902fa84509a38d2c91548768845db5d6c2de0e33f6100000000\","
-//     "[\"8ef6b79382a1fc5152c7e69b2dd4e3795ed758d6fe7748ef4d96e3ad8ac180b8\",\"5b6e1cfecd94050b763c2c6a08d4caabd54daee665aa8e41b53b39ec76b62707\",\"f85b768f83fffbb3927f7f440cb57a5ed386f368aae88ad9b9d92e7bc1cdce15\",\"e51b9391c39019d8a2a27becc048cc770f5d33b49a29779fdc7bed04767ca962\",\"9f5d08316ead260455ec532a58935411a3eecf3c9948a52325de495d7dd7b776\",\"57e10cad23a646ad3a87fcd34eae454567dbd44946e746ee6310a86b98afa4ac\",\"f3b65cc08b25901b657efb22f0a9a23e1a61ce1e268f801d8cfe782b4a0c5e5d\",\"648e00fe2a57dca155c7d4260bc52273b28adb42e1bceb45d5ee03f4a4c5d174\",\"43ad393f7efe4b7a29775dbbc10b3b2737e9457764a7b39bc8ac6b470b968ac8\",\"4964b9b2bf601dfb2bd62067acafe556650412b1e6fe32df48c39310f7dc255d\",\"44d354ac57fcb68b408df7f5396122195384914dd2db13d5766c334fc48c2069\",\"568514a2db82a055772218f52db2f5fa157c37a9ba16c1a239819e57f0d16218\"],"
-//     "\"20000004\",\"1705ae3a\",\"6470e2a1\",true]}";
-//     mining_notify * params = parse_mining_notify_message(notify_json_str, 512);
-//     char * coinbase_tx = construct_coinbase_tx(params->coinbase_1, params->coinbase_2, "336508070fca95", "0000000000000000");
-//     char merkle_root[65]
-//     calculate_merkle_root_hash(coinbase_tx, (uint8_t(*)[32])params->merkle_branches, params->n_merkle_branches, merkle_root);
-//     bm_job job = { 0 };
-//     construct_bm_job(params, merkle_root, 1000, &job);
-
-//     uint8_t expected_midstate_bin[32];
-//     hex2bin("5FD281AF6A1750EAEE502C04067738BD46C82FC22112FFE797CE7F035D276126", expected_midstate_bin, 32);
-//     // bytes are reversed for the midstate on the bm job command packet
-//     reverse_32bit_words(expected_midstate_bin, 32);
-//     TEST_ASSERT_EQUAL_UINT8_ARRAY(expected_midstate_bin, job.midstate, 32);
-//     TEST_ASSERT_EQUAL_UINT32(0x1705ae3a, job.target);
-//     TEST_ASSERT_EQUAL_UINT32(0x6470e2a1, job.ntime);
-//     TEST_ASSERT_EQUAL_UINT8(0x8a, job.merkle_root[28]);
-//     TEST_ASSERT_EQUAL_UINT8(0xdd, job.merkle_root[29]);
-//     TEST_ASSERT_EQUAL_UINT8(0xa8, job.merkle_root[30]);
-//     TEST_ASSERT_EQUAL_UINT8(0x6a, job.merkle_root[31]);
-// }
 
 TEST_CASE("Test extranonce 2 generation", "[mining extranonce2]")
 {
@@ -179,13 +131,22 @@ TEST_CASE("Test nonce diff checking", "[mining test_nonce][not-on-qemu]")
     notify_message.ntime = 0x646ff1a9;
     uint8_t merkle_root[32];
     hex2bin("6d0359c451434605c52a5a9ce074340be47c2c63840731f9edf1db3f26b1cdd9", merkle_root, 32);
-    bm_job job = { 0 };
-    construct_bm_job(&notify_message, merkle_root, 0, 1000, &job);
+    mining_template_t template = {
+        .version = notify_message.version,
+        .target = notify_message.target,
+        .ntime = notify_message.ntime,
+    };
+    reverse_32bit_words(merkle_root, template.merkle_root);
+    uint8_t prev_hash[32];
+    hex2bin(notify_message.prev_block_hash, prev_hash, 32);
+    reverse_endianness_per_word(prev_hash);
+    reverse_32bit_words(prev_hash, template.prev_block_hash);
 
     uint32_t nonce = 0x276E8947;
     uint32_t version_bits = 0;
-    uint32_t rolled_version = job.version | version_bits;
-    double diff = test_nonce_value(&job, nonce, job.ntime, rolled_version);
+    uint32_t rolled_version = template.version | version_bits;
+    double diff = mining_test_nonce_value(
+        &template, nonce, template.ntime, rolled_version);
     TEST_ASSERT_EQUAL_INT(18, (int)diff);
 }
 
@@ -227,12 +188,21 @@ TEST_CASE("Test nonce diff checking 2", "[mining test_nonce][not-on-qemu]")
     bin2hex(merkle_root_hash, 32, merkle_root, 65);
     TEST_ASSERT_EQUAL_STRING("5bdc1968499c3393873edf8e07a1c3a50a97fc3a9d1a376bbf77087dd63778eb", merkle_root);
 
-    bm_job job = { 0 };
-    construct_bm_job(&notify_message, merkle_root_hash, 0, 1000, &job);
+    mining_template_t template = {
+        .version = notify_message.version,
+        .target = notify_message.target,
+        .ntime = notify_message.ntime,
+    };
+    reverse_32bit_words(merkle_root_hash, template.merkle_root);
+    uint8_t prev_hash[32];
+    hex2bin(notify_message.prev_block_hash, prev_hash, 32);
+    reverse_endianness_per_word(prev_hash);
+    reverse_32bit_words(prev_hash, template.prev_block_hash);
 
     uint32_t nonce = 0x0a029ed1;
     uint32_t version_bits = 0;
-    uint32_t rolled_version = job.version | version_bits;
-    double diff = test_nonce_value(&job, nonce, job.ntime, rolled_version);
+    uint32_t rolled_version = template.version | version_bits;
+    double diff = mining_test_nonce_value(
+        &template, nonce, template.ntime, rolled_version);
     TEST_ASSERT_EQUAL_INT(683, (int)diff);
 }

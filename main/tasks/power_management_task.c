@@ -43,7 +43,7 @@ static void mining_stop(GlobalState * GLOBAL_STATE)
 
     // Cut ASIC power and hold in reset
     VCORE_set_voltage(GLOBAL_STATE, 0.0f);
-    asic_hold_reset_low();
+    asic_hold_reset_low(GLOBAL_STATE);
 
     // Mark uninitialized immediately so tasks stop issuing UART commands
     GLOBAL_STATE->ASIC_initalized = false;
@@ -64,7 +64,11 @@ static uint8_t mining_start(GlobalState * GLOBAL_STATE)
 
     // Restore voltage from NVS
     uint16_t voltage = nvs_config_get_u16(NVS_CONFIG_ASIC_VOLTAGE);
-    VCORE_set_voltage(GLOBAL_STATE, (double) voltage / 1000.0);
+    if (VCORE_set_voltage(GLOBAL_STATE, (double)voltage / 1000.0) !=
+        ESP_OK) {
+        ESP_LOGE(TAG, "Mining start failed - ASIC power did not validate");
+        return 0;
+    }
 
     // Wait for voltage to stabilize before touching the ASIC
     vTaskDelay(500 / portTICK_PERIOD_MS);
@@ -236,8 +240,10 @@ void POWER_MANAGEMENT_task(void * pvParameters)
 
         if (core_voltage != last_core_voltage) {
             ESP_LOGI(TAG, "setting new vcore voltage to %umV", core_voltage);
-            VCORE_set_voltage(GLOBAL_STATE, (double) core_voltage / 1000.0);
-            last_core_voltage = core_voltage;
+            if (VCORE_set_voltage(
+                    GLOBAL_STATE, (double)core_voltage / 1000.0) == ESP_OK) {
+                last_core_voltage = core_voltage;
+            }
         }
 
         if (asic_frequency != last_asic_frequency) {

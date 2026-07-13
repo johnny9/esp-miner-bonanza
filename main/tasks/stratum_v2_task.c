@@ -759,14 +759,16 @@ void stratum_v2_task(void *pvParameters)
 
         // 1. Send SetupConnection
         {
-            const char *device_model = GLOBAL_STATE->DEVICE_CONFIG.family.asic.name;
+            const char *firmware_version =
+                GLOBAL_STATE->SYSTEM_MODULE.version != NULL
+                    ? GLOBAL_STATE->SYSTEM_MODULE.version : "";
             ESP_LOGI(TAG, "Sending SetupConnection (vendor=bitaxe, hw=%s, channel=%s)",
-                     device_model ? device_model : "",
+                     "esp32s3",
                      channel_type == SV2_CHANNEL_EXTENDED ? SV2_CHANNEL_TYPE_EXTENDED : SV2_CHANNEL_TYPE_STANDARD);
             int frame_len = sv2_build_setup_connection(frame_buf, SV2_MAX_FRAME_SIZE,
                                                        stratum_url, port,
-                                                       "bitaxe", device_model ? device_model : "",
-                                                       "", "", setup_flags);
+                                                       "bitaxe", "esp32s3",
+                                                       firmware_version, "", setup_flags);
             if (frame_len < 0 || sv2_noise_send(noise_ctx, transport, frame_buf, frame_len) != 0) {
                 ESP_LOGE(TAG, "Failed to send SetupConnection");
                 snprintf(GLOBAL_STATE->SYSTEM_MODULE.pool_connection_info,

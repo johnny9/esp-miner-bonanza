@@ -748,7 +748,7 @@ static void tests_done(GlobalState * GLOBAL_STATE, bool isTestPassed)
     GLOBAL_STATE->SELF_TEST_MODULE.is_finished = true;
     self_test_stop_nonce_measurement(GLOBAL_STATE);
     VCORE_set_voltage(GLOBAL_STATE, 0.0f);
-    asic_hold_reset_low();
+    asic_hold_reset_low(GLOBAL_STATE);
 
     if (isTestPassed) {
         if (isFactoryTest) {

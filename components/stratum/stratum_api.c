@@ -645,15 +645,15 @@ static void debug_stratum_tx(const char * msg)
     }
 }
 
-int STRATUM_V1_subscribe(esp_transport_handle_t transport, int send_uid, const char * model)
+int STRATUM_V1_subscribe(esp_transport_handle_t transport, int send_uid)
 {
     // Subscribe
     char subscribe_msg[BUFFER_SIZE];
     const esp_app_desc_t *app_desc = esp_app_get_description();
     const char *version = app_desc->version;	
     snprintf(subscribe_msg, sizeof(subscribe_msg),
-        "{\"id\":%d,\"method\":\"mining.subscribe\",\"params\":[\"bitaxe/%s/%s\"]}\n",
-        send_uid, model, version);
+        "{\"id\":%d,\"method\":\"mining.subscribe\",\"params\":[\"bitaxe/esp-miner/%s\"]}\n",
+        send_uid, version);
     debug_stratum_tx(subscribe_msg);
 
     return esp_transport_write(transport, subscribe_msg, strlen(subscribe_msg), TRANSPORT_TIMEOUT_MS);

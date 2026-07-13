@@ -24,9 +24,6 @@
 #define TPS546_INIT_PHASE_SINGLE 0x00  /* Single-phase (Single TPS) */
 #define TPS546_INIT_PHASE_MULTI   0xFF  /* Multi-phase stack (Multi TPS) */
 
-#define TPS546_INIT_FREQUENCY 650  /* KHz */
-
-
 typedef struct {
   uint16_t status_word;
   uint8_t  st_vout, st_input, st_iout, st_temp, st_cml, st_mfr, st_other;
@@ -38,8 +35,11 @@ typedef struct {
 
 typedef struct
 {
+  bool TPS546_EXTENDED_CONFIG;
   /* Phase readout configuration */
   uint8_t TPS546_INIT_PHASE; /* phase register configuration */
+  uint16_t TPS546_INIT_SMBALERT_MASK[7];
+  int TPS546_INIT_FREQUENCY;
   /* vin voltage */
   float TPS546_INIT_VIN_ON;  /* V */
   float TPS546_INIT_VIN_OFF; /* V */
@@ -57,8 +57,35 @@ typedef struct
   
   uint16_t TPS546_INIT_STACK_CONFIG; /* Stack configuration */
   uint8_t TPS546_INIT_SYNC_CONFIG; /* Sync configuration */
+  uint16_t TPS546_INIT_INTERLEAVE;
+  uint16_t TPS546_INIT_MISC_OPTIONS;
+  uint16_t TPS546_INIT_PIN_DETECT_OVERRIDE;
   uint8_t TPS546_INIT_COMPENSATION_CONFIG[5];
-  
+  uint8_t TPS546_INIT_POWER_STAGE_CONFIG;
+  uint8_t TPS546_INIT_TELEMETRY_CONFIG[6];
+  uint16_t TPS546_INIT_VOUT_TRIM;
+  uint16_t TPS546_INIT_VOUT_TRANSITION_RATE;
+  uint16_t TPS546_INIT_IOUT_CAL_GAIN;
+  uint16_t TPS546_INIT_IOUT_CAL_OFFSET;
+  float TPS546_EXT_VOUT_MARGIN_HIGH;
+  float TPS546_EXT_VOUT_MARGIN_LOW;
+  float TPS546_EXT_VOUT_OV_FAULT_LIMIT;
+  uint8_t TPS546_EXT_VOUT_OV_FAULT_RESPONSE;
+  float TPS546_EXT_VOUT_OV_WARN_LIMIT;
+  float TPS546_EXT_VOUT_UV_WARN_LIMIT;
+  float TPS546_EXT_VOUT_UV_FAULT_LIMIT;
+  uint8_t TPS546_EXT_VOUT_UV_FAULT_RESPONSE;
+  uint8_t TPS546_EXT_IOUT_OC_FAULT_RESPONSE;
+  int TPS546_EXT_OT_FAULT_LIMIT;
+  uint8_t TPS546_EXT_OT_FAULT_RESPONSE;
+  int TPS546_EXT_OT_WARN_LIMIT;
+  uint8_t TPS546_EXT_VIN_OV_FAULT_RESPONSE;
+  int TPS546_EXT_TON_DELAY;
+  int TPS546_EXT_TON_RISE;
+  int TPS546_EXT_TON_MAX_FAULT_LIMIT;
+  uint8_t TPS546_EXT_TON_MAX_FAULT_RESPONSE;
+  int TPS546_EXT_TOFF_DELAY;
+  int TPS546_EXT_TOFF_FALL;
 } TPS546_CONFIG;
 
 /* vin voltage */
@@ -191,7 +218,7 @@ typedef struct
 esp_err_t TPS546_init(TPS546_CONFIG config);
 
 void TPS546_read_mfr_info(uint8_t *);
-void TPS546_write_entire_config(void);
+esp_err_t TPS546_write_entire_config(void);
 int TPS546_get_frequency(void);
 void TPS546_set_frequency(int);
 int TPS546_get_temperature(void);

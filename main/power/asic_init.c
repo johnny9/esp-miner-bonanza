@@ -14,7 +14,7 @@ uint8_t asic_initialize(GlobalState *GLOBAL_STATE, asic_init_mode_t mode, uint32
     const char *mode_str = (mode == ASIC_INIT_COLD_BOOT) ? "cold boot" : "recovery";
     ESP_LOGI(TAG, "Starting ASIC initialization (%s mode)", mode_str);
 
-    if (asic_reset() != ESP_OK) {
+    if (asic_reset(GLOBAL_STATE) != ESP_OK) {
         GLOBAL_STATE->SYSTEM_MODULE.asic_status = "ASIC reset failed";
         ESP_LOGE(TAG, "ASIC reset failed!");
         return 0;

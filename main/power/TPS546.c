@@ -109,6 +109,7 @@ static esp_err_t smb_read_block(uint8_t command, uint8_t *data, uint8_t len)
 {
     //malloc a buffer len+1 to store the length byte
     uint8_t *buf = (uint8_t *)malloc(len+1);
+    if (buf == NULL) return ESP_ERR_NO_MEM;
     if (i2c_bitaxe_register_read(tps546_i2c_handle, command, buf, len+1) != ESP_OK) {
         free(buf);
         return ESP_FAIL;
@@ -130,6 +131,7 @@ static esp_err_t smb_write_block(uint8_t command, uint8_t *data, uint8_t len)
 {
     //malloc a buffer len+2 to store the command byte and then the length byte
     uint8_t *buf = (uint8_t *)malloc(len+2);
+    if (buf == NULL) return ESP_ERR_NO_MEM;
     buf[0] = command;
     buf[1] = len;
     //copy the data into the buffer
@@ -331,6 +333,198 @@ static uint16_t float_2_ulinear16(float value)
     return result;
 }
 
+static esp_err_t TPS546_write_extended_config(void)
+{
+    static const uint8_t status_selectors[] = {
+        PMBUS_STATUS_VOUT_SELECTOR,
+        PMBUS_STATUS_IOUT_SELECTOR,
+        PMBUS_STATUS_INPUT_SELECTOR,
+        PMBUS_STATUS_TEMPERATURE_SELECTOR,
+        PMBUS_STATUS_CML_SELECTOR,
+        PMBUS_STATUS_OTHER_SELECTOR,
+        PMBUS_STATUS_MFR_SPECIFIC_SELECTOR,
+    };
+
+    uint8_t on_off_config = ON_OFF_CONFIG_DELAY | ON_OFF_CONFIG_POLARITY |
+                            ON_OFF_CONFIG_CMD | ON_OFF_CONFIG_PU;
+    ESP_RETURN_ON_ERROR(smb_write_byte(PMBUS_ON_OFF_CONFIG, on_off_config),
+                        TAG, "write ON_OFF_CONFIG failed");
+    ESP_RETURN_ON_ERROR(smb_write_byte(PMBUS_PHASE,
+                                       tps546_config.TPS546_INIT_PHASE),
+                        TAG, "write PHASE failed");
+    for (size_t i = 0; i < sizeof(status_selectors); ++i) {
+        uint16_t value = tps546_config.TPS546_INIT_SMBALERT_MASK[i] |
+                         status_selectors[i];
+        ESP_RETURN_ON_ERROR(smb_write_word(PMBUS_SMBALERT_MASK, value),
+                            TAG, "write SMBALERT_MASK failed");
+    }
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_FREQUENCY_SWITCH,
+                            int_2_slinear11(tps546_config.TPS546_INIT_FREQUENCY)),
+                        TAG, "write FREQUENCY_SWITCH failed");
+    ESP_RETURN_ON_ERROR(smb_write_byte(
+                            PMBUS_SYNC_CONFIG,
+                            tps546_config.TPS546_INIT_SYNC_CONFIG),
+                        TAG, "write SYNC_CONFIG failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_STACK_CONFIG,
+                            tps546_config.TPS546_INIT_STACK_CONFIG),
+                        TAG, "write STACK_CONFIG failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_INTERLEAVE,
+                            tps546_config.TPS546_INIT_INTERLEAVE),
+                        TAG, "write INTERLEAVE failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_MISC_OPTIONS,
+                            tps546_config.TPS546_INIT_MISC_OPTIONS),
+                        TAG, "write MISC_OPTIONS failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_PIN_DETECT_OVERRIDE,
+                            tps546_config.TPS546_INIT_PIN_DETECT_OVERRIDE),
+                        TAG, "write PIN_DETECT_OVERRIDE failed");
+    ESP_RETURN_ON_ERROR(smb_write_byte(PMBUS_SLAVE_ADDRESS,
+                                       TPS546_I2CADDR),
+                        TAG, "write SLAVE_ADDRESS failed");
+    ESP_RETURN_ON_ERROR(smb_write_block(
+                            PMBUS_COMPENSATION_CONFIG,
+                            tps546_config.TPS546_INIT_COMPENSATION_CONFIG, 5),
+                        TAG, "write COMPENSATION_CONFIG failed");
+    vTaskDelay(pdMS_TO_TICKS(100));
+    ESP_RETURN_ON_ERROR(smb_write_block(
+                            PMBUS_POWER_STAGE_CONFIG,
+                            &tps546_config.TPS546_INIT_POWER_STAGE_CONFIG, 1),
+                        TAG, "write POWER_STAGE_CONFIG failed");
+    ESP_RETURN_ON_ERROR(smb_write_block(
+                            PMBUS_TELEMETRY_CFG,
+                            tps546_config.TPS546_INIT_TELEMETRY_CONFIG, 6),
+                        TAG, "write TELEMETRY_CONFIG failed");
+
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VOUT_COMMAND,
+                            float_2_ulinear16(tps546_config.TPS546_INIT_VOUT_COMMAND)),
+                        TAG, "write VOUT_COMMAND failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VOUT_TRIM,
+                            tps546_config.TPS546_INIT_VOUT_TRIM),
+                        TAG, "write VOUT_TRIM failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VOUT_MAX,
+                            float_2_ulinear16(tps546_config.TPS546_INIT_VOUT_MAX)),
+                        TAG, "write VOUT_MAX failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VOUT_MARGIN_HIGH,
+                            float_2_ulinear16(tps546_config.TPS546_EXT_VOUT_MARGIN_HIGH)),
+                        TAG, "write VOUT_MARGIN_HIGH failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VOUT_MARGIN_LOW,
+                            float_2_ulinear16(tps546_config.TPS546_EXT_VOUT_MARGIN_LOW)),
+                        TAG, "write VOUT_MARGIN_LOW failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VOUT_TRANSITION_RATE,
+                            tps546_config.TPS546_INIT_VOUT_TRANSITION_RATE),
+                        TAG, "write VOUT_TRANSITION_RATE failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VOUT_SCALE_LOOP,
+                            float_2_slinear11(tps546_config.TPS546_INIT_SCALE_LOOP)),
+                        TAG, "write VOUT_SCALE_LOOP failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VOUT_MIN,
+                            float_2_ulinear16(tps546_config.TPS546_INIT_VOUT_MIN)),
+                        TAG, "write VOUT_MIN failed");
+
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VIN_ON,
+                            float_2_slinear11(tps546_config.TPS546_INIT_VIN_ON)),
+                        TAG, "write VIN_ON failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VIN_OFF,
+                            float_2_slinear11(tps546_config.TPS546_INIT_VIN_OFF)),
+                        TAG, "write VIN_OFF failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_IOUT_CAL_GAIN,
+                            tps546_config.TPS546_INIT_IOUT_CAL_GAIN),
+                        TAG, "write IOUT_CAL_GAIN failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_IOUT_CAL_OFFSET,
+                            tps546_config.TPS546_INIT_IOUT_CAL_OFFSET),
+                        TAG, "write IOUT_CAL_OFFSET failed");
+
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VOUT_OV_FAULT_LIMIT,
+                            float_2_ulinear16(tps546_config.TPS546_EXT_VOUT_OV_FAULT_LIMIT)),
+                        TAG, "write VOUT_OV_FAULT_LIMIT failed");
+    ESP_RETURN_ON_ERROR(smb_write_byte(PMBUS_VOUT_OV_FAULT_RESPONSE,
+                                       tps546_config.TPS546_EXT_VOUT_OV_FAULT_RESPONSE),
+                        TAG, "write VOUT_OV_FAULT_RESPONSE failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VOUT_OV_WARN_LIMIT,
+                            float_2_ulinear16(tps546_config.TPS546_EXT_VOUT_OV_WARN_LIMIT)),
+                        TAG, "write VOUT_OV_WARN_LIMIT failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VOUT_UV_WARN_LIMIT,
+                            float_2_ulinear16(tps546_config.TPS546_EXT_VOUT_UV_WARN_LIMIT)),
+                        TAG, "write VOUT_UV_WARN_LIMIT failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VOUT_UV_FAULT_LIMIT,
+                            float_2_ulinear16(tps546_config.TPS546_EXT_VOUT_UV_FAULT_LIMIT)),
+                        TAG, "write VOUT_UV_FAULT_LIMIT failed");
+    ESP_RETURN_ON_ERROR(smb_write_byte(PMBUS_VOUT_UV_FAULT_RESPONSE,
+                                       tps546_config.TPS546_EXT_VOUT_UV_FAULT_RESPONSE),
+                        TAG, "write VOUT_UV_FAULT_RESPONSE failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_IOUT_OC_FAULT_LIMIT,
+                            float_2_slinear11(tps546_config.TPS546_INIT_IOUT_OC_FAULT_LIMIT)),
+                        TAG, "write IOUT_OC_FAULT_LIMIT failed");
+    ESP_RETURN_ON_ERROR(smb_write_byte(PMBUS_IOUT_OC_FAULT_RESPONSE,
+                                       tps546_config.TPS546_EXT_IOUT_OC_FAULT_RESPONSE),
+                        TAG, "write IOUT_OC_FAULT_RESPONSE failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_IOUT_OC_WARN_LIMIT,
+                            float_2_slinear11(tps546_config.TPS546_INIT_IOUT_OC_WARN_LIMIT)),
+                        TAG, "write IOUT_OC_WARN_LIMIT failed");
+
+    ESP_RETURN_ON_ERROR(smb_write_word(PMBUS_OT_FAULT_LIMIT,
+                                       int_2_slinear11(tps546_config.TPS546_EXT_OT_FAULT_LIMIT)),
+                        TAG, "write OT_FAULT_LIMIT failed");
+    ESP_RETURN_ON_ERROR(smb_write_byte(PMBUS_OT_FAULT_RESPONSE,
+                                       tps546_config.TPS546_EXT_OT_FAULT_RESPONSE),
+                        TAG, "write OT_FAULT_RESPONSE failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(PMBUS_OT_WARN_LIMIT,
+                                       int_2_slinear11(tps546_config.TPS546_EXT_OT_WARN_LIMIT)),
+                        TAG, "write OT_WARN_LIMIT failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VIN_OV_FAULT_LIMIT,
+                            float_2_slinear11(tps546_config.TPS546_INIT_VIN_OV_FAULT_LIMIT)),
+                        TAG, "write VIN_OV_FAULT_LIMIT failed");
+    ESP_RETURN_ON_ERROR(smb_write_byte(PMBUS_VIN_OV_FAULT_RESPONSE,
+                                       tps546_config.TPS546_EXT_VIN_OV_FAULT_RESPONSE),
+                        TAG, "write VIN_OV_FAULT_RESPONSE failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(
+                            PMBUS_VIN_UV_WARN_LIMIT,
+                            float_2_slinear11(tps546_config.TPS546_INIT_VIN_UV_WARN_LIMIT)),
+                        TAG, "write VIN_UV_WARN_LIMIT failed");
+
+    ESP_RETURN_ON_ERROR(smb_write_word(PMBUS_TON_DELAY,
+                                       int_2_slinear11(tps546_config.TPS546_EXT_TON_DELAY)),
+                        TAG, "write TON_DELAY failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(PMBUS_TON_RISE,
+                                       int_2_slinear11(tps546_config.TPS546_EXT_TON_RISE)),
+                        TAG, "write TON_RISE failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(PMBUS_TON_MAX_FAULT_LIMIT,
+                                       int_2_slinear11(tps546_config.TPS546_EXT_TON_MAX_FAULT_LIMIT)),
+                        TAG, "write TON_MAX_FAULT_LIMIT failed");
+    ESP_RETURN_ON_ERROR(smb_write_byte(PMBUS_TON_MAX_FAULT_RESPONSE,
+                                       tps546_config.TPS546_EXT_TON_MAX_FAULT_RESPONSE),
+                        TAG, "write TON_MAX_FAULT_RESPONSE failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(PMBUS_TOFF_DELAY,
+                                       int_2_slinear11(tps546_config.TPS546_EXT_TOFF_DELAY)),
+                        TAG, "write TOFF_DELAY failed");
+    ESP_RETURN_ON_ERROR(smb_write_word(PMBUS_TOFF_FALL,
+                                       int_2_slinear11(tps546_config.TPS546_EXT_TOFF_FALL)),
+                        TAG, "write TOFF_FALL failed");
+    return ESP_OK;
+}
+
 /*--- Public TPS546 functions ---*/
 
 /**
@@ -383,12 +577,17 @@ esp_err_t TPS546_init(TPS546_CONFIG config)
     //write operation register to turn off power
     u8_value = OPERATION_OFF;
     ESP_LOGI(TAG, "Power config-OPERATION: %02X", u8_value);
-    smb_write_byte(PMBUS_OPERATION, u8_value);
+    ESP_RETURN_ON_ERROR(smb_write_byte(PMBUS_OPERATION, u8_value), TAG,
+                        "set OPERATION off failed");
 
     /* Make sure power is turned off until commanded */
     u8_value = (ON_OFF_CONFIG_DELAY | ON_OFF_CONFIG_POLARITY | ON_OFF_CONFIG_CP | ON_OFF_CONFIG_CMD | ON_OFF_CONFIG_PU);
     ESP_LOGI(TAG, "Power config-ON_OFF_CONFIG: %02X", u8_value);
-    smb_write_byte(PMBUS_ON_OFF_CONFIG, u8_value);
+    ESP_RETURN_ON_ERROR(smb_write_byte(PMBUS_ON_OFF_CONFIG, u8_value), TAG,
+                        "set ON_OFF_CONFIG failed");
+
+    ESP_RETURN_ON_ERROR(TPS546_clear_faults(), TAG,
+                        "clear initial TPS546 faults failed");
 
     /* Read version number and see if it matches */
     TPS546_read_mfr_info(read_mfr_revision);
@@ -398,9 +597,11 @@ esp_err_t TPS546_init(TPS546_CONFIG config)
     // ESP_LOGI(TAG, "--------------------------------");
     // ESP_LOGI(TAG, "Config version mismatch, writing new config values");
     ESP_LOGI(TAG, "Writing new config values");
-    smb_read_byte(PMBUS_VOUT_MODE, &voutmode);
+    ESP_RETURN_ON_ERROR(smb_read_byte(PMBUS_VOUT_MODE, &voutmode), TAG,
+                        "read VOUT_MODE failed");
     ESP_LOGI(TAG, "VOUT_MODE: %02x", voutmode);
-    TPS546_write_entire_config();
+    ESP_RETURN_ON_ERROR(TPS546_write_entire_config(), TAG,
+                        "TPS546 configuration failed");
     //}
 
     // /* Show temperature */
@@ -524,8 +725,11 @@ void TPS546_read_mfr_info(uint8_t *read_mfr_revision)
 /**
  * @brief Set all the relevant config registers for normal operation 
 */
-void TPS546_write_entire_config(void)
+esp_err_t TPS546_write_entire_config(void)
 {
+    if (tps546_config.TPS546_EXTENDED_CONFIG) {
+        return TPS546_write_extended_config();
+    }
     
     ESP_LOGI(TAG, "---Writing new config values to TPS546---");
 
@@ -550,8 +754,8 @@ void TPS546_write_entire_config(void)
     smb_write_byte(PMBUS_PHASE, tps546_config.TPS546_INIT_PHASE);
 
     /* Switch frequency */
-    ESP_LOGI(TAG, "Setting FREQUENCY: %dMHz", TPS546_INIT_FREQUENCY);
-    smb_write_word(PMBUS_FREQUENCY_SWITCH, int_2_slinear11(TPS546_INIT_FREQUENCY));
+    ESP_LOGI(TAG, "Setting FREQUENCY: %dkHz", tps546_config.TPS546_INIT_FREQUENCY);
+    smb_write_word(PMBUS_FREQUENCY_SWITCH, int_2_slinear11(tps546_config.TPS546_INIT_FREQUENCY));
 
     if(tps546_config.TPS546_INIT_COMPENSATION_CONFIG[0] != 0 &&
        tps546_config.TPS546_INIT_COMPENSATION_CONFIG[1] != 0 &&
@@ -659,7 +863,7 @@ void TPS546_write_entire_config(void)
 
     /* configure the bootup behavior regarding pin detect values vs NVM values */
     ESP_LOGI(TAG, "Setting PIN_DETECT_OVERRIDE");
-    smb_write_word(PMBUS_PIN_DETECT_OVERRIDE, INIT_PIN_DETECT_OVERRIDE);
+    smb_write_word(PMBUS_PIN_DETECT_OVERRIDE, tps546_config.TPS546_INIT_PIN_DETECT_OVERRIDE);
 
     /* TODO write new MFR_REVISION number to reflect these parameters */
     // ESP_LOGI(TAG, "Setting MFR ID");
@@ -678,6 +882,7 @@ void TPS546_write_entire_config(void)
     // ESP_LOGI(TAG, "---Saving new config---");
     // smb_write_byte(PMBUS_STORE_USER_ALL, 0x98);
 
+    return ESP_OK;
 }
 
 int TPS546_get_frequency(void)
@@ -1288,4 +1493,3 @@ esp_err_t TPS546_snapshot_status(TPS546_StatusSnapshot *s) {
 
     ESP_LOGE(TAG, "=================================================");
 }
-

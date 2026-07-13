@@ -17,6 +17,8 @@ SRCS
     "bzm.c"
     "bzm_reactor.c"
     "bzm_transport.c"
+    "bzm_bridge.c"
+    "bzm_power.c"
     "bzm_driver.c"
     "frequency_transition_bmXX.c"
     "pll.c"

@@ -1,3 +1,3 @@
 idf_component_register(SRC_DIRS "."
-                       INCLUDE_DIRS "."
+                       INCLUDE_DIRS "." "../../../main"
                        REQUIRES cmock stratum stratum_v2 asic)

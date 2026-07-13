@@ -74,6 +74,16 @@ bool bzm_result_decode(const uint8_t frame[BZM_RESULT_FRAME_SIZE],
     return result->engine_id < BZM_MAX_ENGINE_COUNT;
 }
 
+bool bzm_tdm_result_decode(
+    const uint8_t frame[BZM_TDM_RESULT_FRAME_SIZE], uint64_t timestamp_us,
+    bzm_raw_result_t *result)
+{
+    if (frame == NULL || result == NULL || frame[1] != 0x01) return false;
+    if (!bzm_result_decode(frame + 2, timestamp_us, result)) return false;
+    result->asic_id = frame[0];
+    return true;
+}
+
 bool bzm_engine_physical_id(uint16_t logical_engine_id,
                             uint16_t *physical_engine_id)
 {
@@ -101,4 +111,10 @@ bool bzm_engine_logical_id(uint16_t physical_engine_id,
     }
     *logical_engine_id = column * BZM_ENGINE_ROWS + row;
     return true;
+}
+
+float bzm_temperature_from_code(uint16_t code)
+{
+    return -293.8f + (631.8f * (((float)(code & 0x0fff)) - 0.5f) /
+                               4096.0f);
 }

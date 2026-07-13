@@ -5,8 +5,10 @@
 #include "asic_job_store.h"
 #include "bm_job_builder.h"
 #include "bzm.h"
+#include "bzm_bridge.h"
 #include "bzm_reactor.h"
 #include "bzm_transport.h"
+#include "device_config.h"
 #include "unity.h"
 
 typedef struct {
@@ -28,6 +30,72 @@ typedef struct {
     size_t count;
     register_write_t writes[64];
 } register_capture_t;
+
+typedef struct {
+    size_t available;
+    size_t programmed;
+    size_t read_count;
+    uint8_t programmed_ids[BZM_MAX_ASIC_COUNT];
+    uint8_t chain_enabled[BZM_MAX_ASIC_COUNT];
+} simulated_chain_t;
+
+static bool simulated_noop(void *context, uint8_t asic_id)
+{
+    simulated_chain_t *chain = context;
+    if (asic_id == BZM_BROADCAST_ASIC) {
+        return chain->programmed < chain->available;
+    }
+    return asic_id >= BZM_FIRST_ASIC_ID &&
+           asic_id < BZM_FIRST_ASIC_ID + chain->programmed;
+}
+
+static bool simulated_chain_write(void *context, uint8_t asic_id,
+                                  uint16_t engine_id, uint8_t offset,
+                                  const void *data, size_t data_len)
+{
+    simulated_chain_t *chain = context;
+    const uint8_t *bytes = data;
+    if (asic_id != BZM_BROADCAST_ASIC ||
+        engine_id != BZM_CONTROL_ENGINE_ID || offset != 0x0b ||
+        data_len != 4 || chain->programmed >= chain->available) {
+        return false;
+    }
+    chain->programmed_ids[chain->programmed] = bytes[0];
+    chain->chain_enabled[chain->programmed] = bytes[1];
+    chain->programmed++;
+    return true;
+}
+
+static bool simulated_chain_read(void *context, uint8_t asic_id,
+                                 uint16_t engine_id, uint8_t offset,
+                                 void *data, size_t data_len)
+{
+    simulated_chain_t *chain = context;
+    uint8_t *bytes = data;
+    size_t index = asic_id - BZM_FIRST_ASIC_ID;
+    if (engine_id != BZM_CONTROL_ENGINE_ID || offset != 0x0b ||
+        data_len != 4 || index >= chain->programmed) {
+        return false;
+    }
+    memset(bytes, 0, data_len);
+    bytes[0] = chain->programmed_ids[index];
+    bytes[1] = chain->chain_enabled[index];
+    chain->read_count++;
+    return true;
+}
+
+static void simulated_chain_delay(void *context, uint32_t delay_ms)
+{
+    (void)context;
+    TEST_ASSERT_EQUAL_UINT32(200, delay_ms);
+}
+
+static const bzm_chain_ops_t SIMULATED_CHAIN_OPS = {
+    .noop = simulated_noop,
+    .write_register = simulated_chain_write,
+    .read_register = simulated_chain_read,
+    .delay_ms = simulated_chain_delay,
+};
 
 static bool capture_register(void *context, uint16_t engine_id,
                              uint8_t offset, const void *data,
@@ -113,6 +181,57 @@ static mining_template_t bzm_template(const char *job_id, bool clean_jobs)
     return template;
 }
 
+TEST_CASE("Bitaxe 1002 selects the Bonanza board profile",
+          "[asic][bzm][board][1002]")
+{
+    const DeviceConfig *board = NULL;
+    for (size_t i = 0;
+         i < sizeof(default_configs) / sizeof(default_configs[0]); ++i) {
+        if (strcmp(default_configs[i].board_version, "1002") == 0) {
+            board = &default_configs[i];
+            break;
+        }
+    }
+    TEST_ASSERT_NOT_NULL(board);
+    TEST_ASSERT_EQUAL(BONANZA, board->family.id);
+    TEST_ASSERT_EQUAL_STRING("Bonanza", board->family.name);
+    TEST_ASSERT_EQUAL(BZM, board->family.asic.id);
+    TEST_ASSERT_EQUAL_STRING("BZM", board->family.asic.name);
+    TEST_ASSERT_EQUAL_UINT8(4, board->family.asic_count);
+    TEST_ASSERT_EQUAL_UINT16(240, board->family.asic.core_count);
+    TEST_ASSERT_EQUAL_UINT16(50,
+                             board->family.asic.default_frequency_mhz);
+    TEST_ASSERT_EQUAL_UINT16(50,
+                             board->family.asic.frequency_options[0]);
+    TEST_ASSERT_EQUAL_UINT16(0,
+                             board->family.asic.frequency_options[1]);
+    TEST_ASSERT_EQUAL_UINT16(2800,
+                             board->family.asic.default_voltage_mv);
+    TEST_ASSERT_EQUAL_UINT16(2800,
+                             board->family.asic.voltage_options[0]);
+    TEST_ASSERT_EQUAL_UINT16(0,
+                             board->family.asic.voltage_options[1]);
+    TEST_ASSERT_EQUAL_UINT16(140, board->family.max_power);
+    TEST_ASSERT_EQUAL_UINT16(0, board->family.power_offset);
+    TEST_ASSERT_EQUAL_UINT16(12, board->family.nominal_voltage);
+    TEST_ASSERT_EQUAL_UINT16(1, board->family.voltage_domains);
+    TEST_ASSERT_EQUAL_STRING("yellow", board->family.swarm_color);
+    TEST_ASSERT_TRUE(board->TPS546);
+    TEST_ASSERT_TRUE(board->bonanza_bridge);
+    TEST_ASSERT_FALSE(board->asic_enable);
+    TEST_ASSERT_FALSE(board->plug_sense);
+    TEST_ASSERT_FALSE(board->EMC2101);
+    TEST_ASSERT_FALSE(board->EMC2103);
+    TEST_ASSERT_FALSE(board->EMC2302);
+    TEST_ASSERT_FALSE(board->TMP1075);
+    TEST_ASSERT_FALSE(board->DS4432U);
+    TEST_ASSERT_FALSE(board->INA260);
+    TEST_ASSERT_EQUAL_UINT16(0, board->power_consumption_target);
+    TEST_ASSERT_EQUAL_UINT32(115200, BZM_BRIDGE_CONTROL_BAUD_RATE);
+    TEST_ASSERT_EQUAL_UINT8(43, BZM_BRIDGE_CONTROL_TX_GPIO);
+    TEST_ASSERT_EQUAL_UINT8(44, BZM_BRIDGE_CONTROL_RX_GPIO);
+}
+
 static bzm_reactor_t *new_reactor(asic_job_store_t *store,
                                   simulated_transport_t *transport,
                                   uint16_t engine_count)
@@ -179,6 +298,28 @@ TEST_CASE("BZM result frame decoder follows the mixed-endian wire layout",
     TEST_ASSERT_EQUAL_UINT32(999, (uint32_t)result.timestamp_us);
 }
 
+TEST_CASE("BZM TDM result decoder preserves the ASIC address",
+          "[asic][bzm][result]")
+{
+    uint8_t frame[BZM_TDM_RESULT_FRAME_SIZE] = {
+        0x44, 0x01,
+        0x83, 0x45, 0x78, 0x56, 0x34, 0x12, 0x17, 0x0d,
+    };
+    bzm_raw_result_t result;
+    TEST_ASSERT_TRUE(bzm_tdm_result_decode(frame, 999, &result));
+    TEST_ASSERT_EQUAL_HEX8(0x44, result.asic_id);
+    TEST_ASSERT_EQUAL_UINT16(0x345, result.engine_id);
+    frame[1] = 0x03;
+    TEST_ASSERT_FALSE(bzm_tdm_result_decode(frame, 999, &result));
+}
+
+TEST_CASE("BZM temperature conversion follows the Intel 12-bit formula",
+          "[asic][bzm][temperature]")
+{
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 22.02f,
+                             bzm_temperature_from_code(0x800));
+}
+
 TEST_CASE("BZM maps contiguous logical engines onto the 20 by 12 grid",
           "[asic][bzm][engine-map]")
 {
@@ -222,6 +363,72 @@ TEST_CASE("BZM transport encoder emits byte-paired 9-bit write words",
     TEST_ASSERT_EQUAL(0, bzm_transport_encode_write(
         0, BZM_MAX_ENGINE_COUNT, 0, data, sizeof(data), encoded,
         sizeof(encoded)));
+}
+
+TEST_CASE("BZM transport encodes read and noop commands",
+          "[asic][bzm][transport]")
+{
+    uint8_t encoded[16];
+    const uint8_t expected_read[] = {
+        0x42, 0x01,
+        0x3f, 0x00,
+        0xff, 0x00,
+        0x0b, 0x00,
+        0x03, 0x00,
+        0x00, 0x00,
+    };
+    TEST_ASSERT_EQUAL(sizeof(expected_read), bzm_transport_encode_read(
+        0x42, BZM_CONTROL_ENGINE_ID, 0x0b, 4, encoded,
+        sizeof(encoded)));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected_read, encoded,
+                                  sizeof(expected_read));
+
+    const uint8_t expected_noop[] = {
+        0xfa, 0x01,
+        0xf0, 0x00,
+    };
+    TEST_ASSERT_EQUAL(sizeof(expected_noop), bzm_transport_encode_noop(
+        BZM_BROADCAST_ASIC, encoded, sizeof(encoded)));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected_noop, encoded,
+                                  sizeof(expected_noop));
+}
+
+TEST_CASE("BZM chain discovery reports every chain length from zero to four",
+          "[asic][bzm][discovery]")
+{
+    for (size_t available = 0; available <= BZM_MAX_ASIC_COUNT;
+         ++available) {
+        uint8_t ids[BZM_MAX_ASIC_COUNT] = {0};
+        simulated_chain_t chain = {.available = available};
+        TEST_ASSERT_EQUAL_UINT32(available, bzm_discover_chain(
+            BZM_MAX_ASIC_COUNT, BZM_FIRST_ASIC_ID, ids, sizeof(ids),
+            &SIMULATED_CHAIN_OPS, &chain));
+        TEST_ASSERT_EQUAL_UINT32(available, chain.read_count);
+        for (size_t i = 0; i < available; ++i) {
+            TEST_ASSERT_EQUAL_UINT8(BZM_FIRST_ASIC_ID + i, ids[i]);
+            TEST_ASSERT_EQUAL_UINT8(i == 0 ? 0 : 1,
+                                    chain.chain_enabled[i]);
+        }
+    }
+}
+
+TEST_CASE("BZM transport partitions an engine nonce range across ASICs",
+          "[asic][bzm][transport][nonce]")
+{
+    for (size_t i = 0; i < 4; ++i) {
+        uint32_t start;
+        uint32_t end;
+        TEST_ASSERT_TRUE(bzm_partition_nonce_range(
+            0x10000000, 0x1fffffff, i, 4, &start, &end));
+        TEST_ASSERT_EQUAL_HEX32(0x10000000 + i * 0x04000000,
+                                start);
+        TEST_ASSERT_EQUAL_HEX32(0x13ffffff + i * 0x04000000,
+                                end);
+    }
+    uint32_t start;
+    uint32_t end;
+    TEST_ASSERT_FALSE(bzm_partition_nonce_range(
+        4, 3, 0, 1, &start, &end));
 }
 
 TEST_CASE("BZM transport programs ordered enhanced work and flush jobs",
@@ -312,6 +519,7 @@ TEST_CASE("BZM reactor resolves microstate version and timestamp rolling",
                       bzm_reactor_dispatch(reactor, &template, NULL));
 
     bzm_raw_result_t raw = {
+        .asic_id = 0x44,
         .engine_id = 64,
         .status = 8,
         .nonce = 0x12345678,
@@ -332,6 +540,7 @@ TEST_CASE("BZM reactor resolves microstate version and timestamp rolling",
     TEST_ASSERT_EQUAL_UINT16(20, event.data.share.engine_id);
     TEST_ASSERT_EQUAL_UINT8(2, event.data.share.micro_job_id);
     TEST_ASSERT_EQUAL_UINT8(0, event.data.share.sequence_id);
+    TEST_ASSERT_EQUAL_UINT8(2, event.data.share.asic_index);
 
     raw.nonce++;
     raw.sequence_id = 3;

@@ -115,3 +115,10 @@ void ASIC_read_registers(GlobalState *state)
         driver->ops.read_registers();
     }
 }
+
+float ASIC_get_temperature(GlobalState *state)
+{
+    const asic_driver_t *driver = active_driver(state);
+    if (driver == NULL || driver->ops.read_temperature == NULL) return -1.0f;
+    return driver->ops.read_temperature(state);
+}

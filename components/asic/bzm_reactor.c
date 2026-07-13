@@ -314,6 +314,10 @@ bool bzm_reactor_map_result(bzm_reactor_t *reactor,
             .final_version = final_version,
             .version_bits = final_version ^ assignment->base_version,
             .timestamp_us = raw->timestamp_us,
+            .asic_index = raw->asic_id >= BZM_FIRST_ASIC_ID &&
+                          raw->asic_id < BZM_FIRST_ASIC_ID +
+                                         BZM_MAX_ASIC_COUNT
+                ? raw->asic_id - BZM_FIRST_ASIC_ID : 0,
             .engine_id = assignment->logical_engine_id,
             .sequence_id = assignment->logical_sequence,
             .micro_job_id = micro_job,

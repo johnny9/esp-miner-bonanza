@@ -21,6 +21,7 @@ typedef struct {
     void (*set_nonce_space)(double nonce_percent, float frequency,
                             uint16_t asic_count, uint16_t cores);
     void (*read_registers)(void);
+    float (*read_temperature)(GlobalState *state);
 } asic_driver_ops_t;
 
 typedef struct {

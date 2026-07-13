@@ -19,5 +19,6 @@ void ASIC_set_frequency(GlobalState * GLOBAL_STATE);
 void ASIC_set_nonce_space(GlobalState * GLOBAL_STATE);
 double ASIC_get_asic_job_frequency_ms(GlobalState * GLOBAL_STATE);
 void ASIC_read_registers(GlobalState * GLOBAL_STATE);
+float ASIC_get_temperature(GlobalState * GLOBAL_STATE);
 
 #endif // ASIC_H

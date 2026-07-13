@@ -15,6 +15,9 @@ jobs:
         with:
           submodules: 'recursive'
 
+      - name: Validate Bitaxe 1002 factory configuration
+        run: python3 tools/validate_bitaxe_1002_config.py
+
       - name: esp-idf build
         uses: espressif/esp-idf-ci-action@v1
         with:

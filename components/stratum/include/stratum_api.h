@@ -84,7 +84,7 @@ void STRATUM_V1_initialize_buffer();
 
 char *STRATUM_V1_receive_jsonrpc_line(esp_transport_handle_t transport);
 
-int STRATUM_V1_subscribe(esp_transport_handle_t transport, int send_uid, const char * model);
+int STRATUM_V1_subscribe(esp_transport_handle_t transport, int send_uid);
 
 bool STRATUM_V1_parse(StratumApiV1Message *message, const char *stratum_json);
 

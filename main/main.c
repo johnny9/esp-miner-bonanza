@@ -86,10 +86,6 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_bitaxe_init());
     ESP_LOGI(TAG, "I2C initialized successfully");
 
-    // Initialize RST pin to low early to minimize ASIC power consumption
-    ESP_ERROR_CHECK(asic_hold_reset_low());
-    ESP_LOGI(TAG, "RST pin initialized to low");
-
     // wait for I2C to init
     vTaskDelay(100 / portTICK_PERIOD_MS);
 
@@ -117,6 +113,11 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to init device config");
         return;
     }
+
+    // Board identity decides whether reset is a direct GPIO or is owned by
+    // the Bonanza RP2040 bridge. Never drive GPIO1 before that decision.
+    ESP_ERROR_CHECK(asic_hold_reset_low(&GLOBAL_STATE));
+    ESP_LOGI(TAG, "ASIC reset initialized to the safe state");
 
     if (self_test_init(&GLOBAL_STATE) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to init self test");
@@ -155,11 +156,16 @@ void app_main(void)
     // After mounting SPIFFS
     SYSTEM_init_versions(&GLOBAL_STATE);
 
-    // Initialize BAP interface
-    esp_err_t bap_ret = BAP_init(&GLOBAL_STATE);
-    if (bap_ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize BAP interface: %d", bap_ret);
-        // Continue anyway, as BAP is not critical for core functionality
+    // UART2 is the Bonanza control link on board 1002. Other products keep
+    // using it for the Bitaxe Accessory Port.
+    if (!GLOBAL_STATE.DEVICE_CONFIG.bonanza_bridge) {
+        esp_err_t bap_ret = BAP_init(&GLOBAL_STATE);
+        if (bap_ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to initialize BAP interface: %d", bap_ret);
+            // Continue anyway, as BAP is not critical for core functionality
+        }
+    } else {
+        ESP_LOGI(TAG, "UART2 reserved for the Bonanza RP2040 bridge; BAP disabled");
     }
 
     while (!GLOBAL_STATE.SYSTEM_MODULE.is_connected) {

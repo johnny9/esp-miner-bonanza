@@ -7,11 +7,19 @@
 #include "EMC2103.h"
 #include "EMC2302.h"
 #include "TMP1075.h"
+#include "asic.h"
+#include "bzm_bridge.h"
 
 static const char * TAG = "thermal";
 
 esp_err_t Thermal_init(DeviceConfig * DEVICE_CONFIG)
 {
+    if (DEVICE_CONFIG->bonanza_bridge) {
+        ESP_RETURN_ON_ERROR(BZM_bridge_init(), TAG,
+                            "Failed to initialise Bonanza control bridge");
+        ESP_RETURN_ON_ERROR(BZM_bridge_set_fan_percent(1.0f), TAG,
+                            "Failed to set Bonanza fan safe state");
+    }
     if (DEVICE_CONFIG->EMC2101) {
         ESP_RETURN_ON_ERROR(EMC2101_init(DEVICE_CONFIG->temp_offset), TAG, "Failed to initialise EMC2101");
         // TODO: Improve this check.
@@ -37,6 +45,9 @@ esp_err_t Thermal_init(DeviceConfig * DEVICE_CONFIG)
 //percent is a float between 0.0 and 1.0
 esp_err_t Thermal_set_fan_percent(DeviceConfig * DEVICE_CONFIG, float percent)
 {
+    if (DEVICE_CONFIG->bonanza_bridge) {
+        return BZM_bridge_set_fan_percent(percent);
+    }
     if (DEVICE_CONFIG->EMC2101) {
         return EMC2101_set_fan_speed(percent);
     }
@@ -51,6 +62,10 @@ esp_err_t Thermal_set_fan_percent(DeviceConfig * DEVICE_CONFIG, float percent)
 
 uint16_t Thermal_get_fan_speed(DeviceConfig * DEVICE_CONFIG) 
 {
+    if (DEVICE_CONFIG->bonanza_bridge) {
+        uint16_t rpm = 0;
+        return BZM_bridge_get_fan_rpm(&rpm) == ESP_OK ? rpm : 0;
+    }
     if (DEVICE_CONFIG->EMC2101) {
         return EMC2101_get_fan_speed();
     }
@@ -89,6 +104,9 @@ float Thermal_get_chip_temp(GlobalState * GLOBAL_STATE)
     }
     if (GLOBAL_STATE->DEVICE_CONFIG.TMP1075) {
         return TMP1075_read_temperature(0);
+    }
+    if (GLOBAL_STATE->DEVICE_CONFIG.bonanza_bridge) {
+        return ASIC_get_temperature(GLOBAL_STATE);
     }
     return -1;
 }

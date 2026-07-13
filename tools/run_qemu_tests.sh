@@ -17,6 +17,8 @@ BUILD_DIR="${ESP_QEMU_BUILD_DIR:-$ROOT_DIR/.cache/qemu-test-build}"
 
 echo "=== ESP-Miner QEMU Test Runner ==="
 
+python3 "$ROOT_DIR/tools/validate_bitaxe_1002_config.py"
+
 # Check if ESP-IDF environment is already sourced
 if ! command -v idf.py &> /dev/null; then
     echo "ESP-IDF environment not detected in PATH."

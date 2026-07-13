@@ -296,7 +296,8 @@ void stratum_v1_task(void *pvParameters)
         }
 
         // mining.subscribe - ID: 2
-        STRATUM_V1_subscribe(GLOBAL_STATE->transport, stratum_get_next_uid(GLOBAL_STATE), GLOBAL_STATE->DEVICE_CONFIG.family.asic.name);
+        STRATUM_V1_subscribe(GLOBAL_STATE->transport,
+                             stratum_get_next_uid(GLOBAL_STATE));
 
         char *username = use_fallback ? GLOBAL_STATE->SYSTEM_MODULE.fallback_pool_user : GLOBAL_STATE->SYSTEM_MODULE.pool_user;
         char *password = use_fallback ? GLOBAL_STATE->SYSTEM_MODULE.fallback_pool_pass : GLOBAL_STATE->SYSTEM_MODULE.pool_pass;

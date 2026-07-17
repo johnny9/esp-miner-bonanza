@@ -16,6 +16,7 @@ import { SliderModule } from 'primeng/slider';
 import { TooltipModule } from 'primeng/tooltip';
 import { InputTextModule } from 'primeng/inputtext';
 import { DateAgoPipe } from 'src/app/pipes/date-ago.pipe';
+import { SystemAsic as ISystemASIC } from 'src/app/generated/models';
 
 type SelectOption = {
   name: string;
@@ -59,6 +60,10 @@ export class EditComponent implements OnInit, OnDestroy, OnChanges {
   public frequencyOptions: number[] = [];
   public defaultVoltage: number = 0;
   public voltageOptions: number[] = [];
+  public frequencyTunable: boolean = true;
+  public voltageTunable: boolean = true;
+
+  private overclockUnlockRequested: boolean = false;
 
   private destroy$ = new Subject<void>();
 
@@ -80,15 +85,8 @@ export class EditComponent implements OnInit, OnDestroy, OnChanges {
     this.route.queryParams.subscribe(params => {
       const urlOcParam = params['oc'] !== undefined;
       if (urlOcParam) {
-        // If ?oc is in URL, enable overclock and save to NVS
-        this.settingsUnlocked = true;
-        this.saveOverclockSetting(1);
-        console.log(
-          '🎉 The ancient seals have been broken!\n' +
-          '⚡ Unlimited power flows through your miner...\n' +
-          '🔧 You can now set custom frequency and voltage values.\n' +
-          '⚠️ Remember: with great power comes great responsibility!'
-        );
+        // Apply the request after loading the hardware capabilities.
+        this.overclockUnlockRequested = true;
       } else {
         // If ?oc is not in URL, check NVS setting (will be loaded in ngOnInit)
         console.log('🔒 Here be dragons! Advanced settings are locked for your protection. \n' +
@@ -167,15 +165,21 @@ export class EditComponent implements OnInit, OnDestroy, OnChanges {
       this.frequencyOptions = asic.frequencyOptions;
       this.defaultVoltage = asic.defaultVoltage;
       this.voltageOptions = asic.voltageOptions;
+      this.applyAsicCapabilities(asic);
       this.statsLimit = info.statsLimit || 720;
 
       // Check if overclock is enabled in NVS
-      if (info.overclockEnabled) {
+      if (this.hasTunableAsicSettings && (info.overclockEnabled || this.overclockUnlockRequested)) {
         this.settingsUnlocked = true;
         console.log(
           '🎉 Overclock mode is enabled from NVS settings!\n' +
           '⚡ Custom frequency and voltage values are available.'
         );
+        if (this.overclockUnlockRequested && !info.overclockEnabled) {
+          this.saveOverclockSetting(1);
+        }
+      } else {
+        this.settingsUnlocked = false;
       }
 
         this.form = this.fb.group({
@@ -202,6 +206,8 @@ export class EditComponent implements OnInit, OnDestroy, OnChanges {
         });
 
         this.formSubject.next(this.form);
+
+      this.updateAsicControlState();
 
       this.form.controls['autofanspeed'].valueChanges.pipe(
         startWith(this.form.controls['autofanspeed'].value),
@@ -277,6 +283,9 @@ export class EditComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   toggleOverclockMode(enable: boolean) {
+    if (!this.hasTunableAsicSettings) {
+      return;
+    }
     this.settingsUnlocked = enable;
     this.saveOverclockSetting(enable ? 1 : 0);
 
@@ -311,6 +320,33 @@ export class EditComponent implements OnInit, OnDestroy, OnChanges {
 
   get selectVoltage(): SelectOption[] {
     return this.buildSelectOptions('coreVoltage', this.voltageOptions, this.defaultVoltage);
+  }
+
+  get hasTunableAsicSettings(): boolean {
+    return this.frequencyTunable || this.voltageTunable;
+  }
+
+  public applyAsicCapabilities(asic: ISystemASIC): void {
+    // Missing fields preserve compatibility when editing older AxeOS peers.
+    this.frequencyTunable = asic.frequencyTunable !== false;
+    this.voltageTunable = asic.voltageTunable !== false;
+    this.updateAsicControlState();
+  }
+
+  private updateAsicControlState(): void {
+    if (!this.form) {
+      return;
+    }
+    if (this.frequencyTunable) {
+      this.form.controls['frequency']?.enable();
+    } else {
+      this.form.controls['frequency']?.disable();
+    }
+    if (this.voltageTunable) {
+      this.form.controls['coreVoltage']?.enable();
+    } else {
+      this.form.controls['coreVoltage']?.disable();
+    }
   }
 
   get displayTimeoutMaxSteps(): number {

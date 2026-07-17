@@ -14,7 +14,7 @@ import { SystemApiService } from 'src/app/services/system.service';
 import { LiveDataService } from 'src/app/services/live-data.service';
 import { ThemeService } from 'src/app/services/theme.service';
 import { LayoutService } from 'src/app/layout/service/app.layout.service';
-import { SystemInfo as ISystemInfo, SystemStatistics as ISystemStatistics } from 'src/app/generated/models';
+import { SystemAsic as ISystemASIC, SystemInfo as ISystemInfo, SystemStatistics as ISystemStatistics } from 'src/app/generated/models';
 import { Title } from '@angular/platform-browser';
 import { UIChart } from 'primeng/chart';
 import { SelectItem } from 'primeng/api';
@@ -93,7 +93,12 @@ export class HomeComponent implements OnInit, OnDestroy {
   public nominalVoltage: number = 0;
   public maxTemp: number = 75;
   public maxRpm: number = 7000;
-  public maxFrequency: number = 800;
+  public maxFrequency: number = 1;
+  public maxCoreVoltage: number = 0.1;
+  public minimumFrequency: number = 0;
+
+  private configuredMaxFrequency: number = 0;
+  private configuredMaxCoreVoltage: number = 0;
 
   public quickLink$!: Observable<string | undefined>;
 
@@ -261,6 +266,15 @@ export class HomeComponent implements OnInit, OnDestroy {
 
     this.pageDefaultTitle = this.titleService.getTitle();
     this.loadingService.loading$.next(true);
+
+    this.systemService.getAsicSettings(this.uri)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: asic => this.configureAsicSettings(asic),
+        error: () => {
+          // Live readings still provide safe meter bounds if metadata is unavailable.
+        }
+      });
 
     let dataSources = this.storageService.getItem(HOME_CHART_DATA_SOURCES);
     let parsedConfig: any = { chartY1Data: chartLabelKey(eChartLabel.hashrate), chartY2Data: chartLabelKey(eChartLabel.asicTemp) };
@@ -856,7 +870,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.nominalVoltage = info.nominalVoltage || 5;
         this.maxTemp = Math.max(75, info.temp || 0);
         this.maxRpm = Math.max(7000, info.fanrpm || 0, info.fan2rpm || 0);
-        this.maxFrequency = Math.max(800, info.actualFrequency || info.frequency || 0);
+        this.updateAsicMeterRanges(info);
         this.statsLimit = info.statsLimit || 720;
 
         // Pre-compute values for template performance
@@ -1073,6 +1087,48 @@ export class HomeComponent implements OnInit, OnDestroy {
     return -1;
   }
 
+  public configureAsicSettings(asic: ISystemASIC): void {
+    const frequencyOptions = asic.frequencyOptions.filter(value => Number.isFinite(value) && value > 0);
+    const voltageOptions = asic.voltageOptions.filter(value => Number.isFinite(value) && value > 0);
+
+    this.minimumFrequency = frequencyOptions.length ? Math.min(...frequencyOptions) : 0;
+    this.configuredMaxFrequency = frequencyOptions.length
+      ? Math.max(...frequencyOptions, asic.defaultFrequency)
+      : asic.defaultFrequency;
+    this.configuredMaxCoreVoltage = (voltageOptions.length
+      ? Math.max(...voltageOptions, asic.defaultVoltage)
+      : asic.defaultVoltage) / 1000;
+
+    if (this.latestInfo) {
+      this.updateAsicMeterRanges(this.latestInfo);
+    } else {
+      this.maxFrequency = Math.max(this.configuredMaxFrequency, 1);
+      this.maxCoreVoltage = Math.max(this.configuredMaxCoreVoltage, 0.1);
+    }
+  }
+
+  private updateAsicMeterRanges(info: ISystemInfo): void {
+    this.maxFrequency = Math.max(
+      this.configuredMaxFrequency,
+      info.actualFrequency || 0,
+      info.frequency || 0,
+      1
+    );
+    this.maxCoreVoltage = Math.max(
+      this.configuredMaxCoreVoltage,
+      info.coreVoltageActual || 0,
+      info.coreVoltage || 0,
+      0.1
+    );
+  }
+
+  public isFrequencyLow(frequency: number): boolean {
+    if (!Number.isFinite(frequency) || frequency <= 0) {
+      return true;
+    }
+    return this.minimumFrequency > 0 && frequency < this.minimumFrequency;
+  }
+
   public handleSystemMessages(info: ISystemInfo, systemInfoError: ISystemInfoError) {
     const updateMessage = (
       condition: boolean,
@@ -1103,7 +1159,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     updateMessage(!!info.overheat_mode, 'DEVICE_OVERHEAT', 'error', 'Device has overheated - See settings');
     updateMessage(!!info.power_fault, 'POWER_FAULT', 'error', `${info.power_fault} Check your Power Supply.`);
     updateMessage(!!info.hardware_fault, 'HARDWARE_FAULT', 'error', `${info.hardware_fault}`);
-    updateMessage(!info.frequency || info.frequency < 400, 'FREQUENCY_LOW', 'warn', 'Device frequency is set low - See settings');
+    updateMessage(this.isFrequencyLow(info.frequency), 'FREQUENCY_LOW', 'warn', 'Device frequency is set low - See settings');
     updateMessage(!!info.isUsingFallbackStratum, 'FALLBACK_STRATUM', 'warn', 'Using fallback pool - Share stats reset. Check Pool Settings and / or reboot Device.');
     updateMessage(info.version !== info.axeOSVersion, 'VERSION_MISMATCH', 'warn', `Firmware (${info.version}) and AxeOS (${info.axeOSVersion}) versions do not match. Please make sure to update both www.bin and esp-miner.bin.`);
     if (info.coinbaseOutputs && info.coinbaseOutputs.length > 0) {

@@ -407,8 +407,10 @@ export class SystemApiService {
       asicCount: 1,
       defaultFrequency: 485,
       frequencyOptions: [400, 425, 450, 475, 485, 500, 525, 550, 575],
+      frequencyTunable: true,
       defaultVoltage: 1200,
-      voltageOptions: [1100, 1150, 1200, 1250, 1300]
+      voltageOptions: [1100, 1150, 1200, 1250, 1300],
+      voltageTunable: true
     }).pipe(delay(1000));
   }
 

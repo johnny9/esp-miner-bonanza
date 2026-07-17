@@ -525,6 +525,7 @@ private isIpAddress(value: string): boolean {
 
   private deriveDeviceModel(data: any): string {
     if (data.boardVersion && data.boardVersion.length > 1) {
+      if (data.boardVersion == "1002") return "Bonanza";
       if (data.boardVersion[0] == "1" || data.boardVersion == "2.2") return "Max";
       if (data.boardVersion[0] == "2" || data.boardVersion == "0.11") return "Ultra";
       if (data.boardVersion[0] == "3") return "UltraHex";
@@ -543,6 +544,7 @@ private isIpAddress(value: string): boolean {
       case 'UltraHex':   return 'orange';
       case 'Gamma':      return 'green';
       case 'GammaTurbo': return 'cyan';
+      case 'Bonanza':    return 'yellow';
       default:           return 'gray';
     }
   }
@@ -656,7 +658,7 @@ return this.swarm.filter(axe =>
         return { color: 'red', msg: 'Overheated' };
       case !!axe.power_fault:
         return { color: 'red', msg: 'Power Fault' };
-      case !axe.frequency || axe.frequency < 400:
+      case this.isFrequencyLow(axe):
         return { color: 'orange', msg: 'Frequency Low' };
       case axe.isUsingFallbackStratum === 1:
         return { color: 'orange', msg: 'Fallback Pool' };
@@ -665,6 +667,20 @@ return this.swarm.filter(axe =>
       default:
         return undefined;
     }
+  }
+
+  public isFrequencyLow(axe: any): boolean {
+    const frequency = Number(axe.frequency);
+    if (!Number.isFinite(frequency) || frequency <= 0) {
+      return true;
+    }
+
+    const options = Array.isArray(axe.frequencyOptions)
+      ? axe.frequencyOptions
+          .map((value: unknown) => Number(value))
+          .filter((value: number) => Number.isFinite(value) && value > 0)
+      : [];
+    return options.length > 0 && frequency < Math.min(...options);
   }
 
   isThisDevice(device: SwarmDevice): boolean {

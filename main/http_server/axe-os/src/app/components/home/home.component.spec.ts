@@ -31,6 +31,7 @@ import { ShareRejectionExplanationService } from 'src/app/services/share-rejecti
 import { LocalStorageService } from 'src/app/local-storage.service';
 import { DashboardEditService } from 'src/app/services/dashboard-edit.service';
 import { LayoutService } from 'src/app/layout/service/app.layout.service';
+import { SystemAsic as ISystemASIC, SystemInfo as ISystemInfo } from 'src/app/generated/models';
 
 describe('HomeComponent', () => {
   let component: HomeComponent;
@@ -82,6 +83,37 @@ describe('HomeComponent', () => {
 
   it('should create', () => {
     expect(component).toBeTruthy();
+  });
+
+  it('uses ASIC metadata for BZM warning and meter ranges', () => {
+    component.configureAsicSettings({
+      ASICModel: 'BZM',
+      deviceModel: 'Bonanza',
+      swarmColor: 'yellow',
+      asicCount: 4,
+      defaultFrequency: 50,
+      frequencyOptions: [50],
+      frequencyTunable: false,
+      defaultVoltage: 2800,
+      voltageOptions: [2800],
+      voltageTunable: false,
+    } as ISystemASIC);
+
+    expect(component.minimumFrequency).toBe(50);
+    expect(component.maxFrequency).toBe(50);
+    expect(component.maxCoreVoltage).toBe(2.8);
+
+    const info = {
+      frequency: 50,
+      version: 'test',
+      axeOSVersion: 'test',
+    } as ISystemInfo;
+    component.handleSystemMessages(info, { duration: 0, startTime: null });
+    expect(component.messages.some(message => message.type === 'FREQUENCY_LOW')).toBeFalse();
+
+    info.frequency = 49;
+    component.handleSystemMessages(info, { duration: 0, startTime: null });
+    expect(component.messages.some(message => message.type === 'FREQUENCY_LOW')).toBeTrue();
   });
 
   describe('stale data and visibility state', () => {

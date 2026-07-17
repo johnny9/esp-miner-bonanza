@@ -26,4 +26,20 @@ describe('SwarmComponent', () => {
   it('should create', () => {
     expect(component).toBeTruthy();
   });
+
+  it('recognizes the Bitaxe 1002 fallback identity', () => {
+    expect(component['deriveDeviceModel']({ boardVersion: '1002' })).toBe('Bonanza');
+    expect(component['deriveSwarmColor']('Bonanza')).toBe('yellow');
+  });
+
+  it('uses advertised frequency options for low-frequency warnings', () => {
+    const bzm = { frequency: 50, frequencyOptions: [50] };
+    expect(component.getDeviceNotification(bzm)).toBeUndefined();
+
+    bzm.frequency = 49;
+    expect(component.getDeviceNotification(bzm)).toEqual({
+      color: 'orange',
+      msg: 'Frequency Low'
+    });
+  });
 });

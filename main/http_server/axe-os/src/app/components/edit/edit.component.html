@@ -1,17 +1,17 @@
 <form *ngIf="form" [formGroup]="form">
     <div class="card">
-        <p-message *ngIf="settingsUnlocked" severity="warn" icon="pi pi-exclamation-triangle" styleClass="w-full mb-3 border-round-xl">
+        <p-message *ngIf="settingsUnlocked && hasTunableAsicSettings" severity="warn" icon="pi pi-exclamation-triangle" styleClass="w-full mb-3 border-round-xl">
             Custom settings can cause damage & system instability. Only modify these settings if you understand the risks of running outside designed parameters.
         </p-message>
 
         <div class="field grid p-fluid">
-            <ng-container *ngIf="settingsUnlocked">
+            <ng-container *ngIf="frequencyTunable && settingsUnlocked">
                 <label for="frequency" class="col-12 md:col-2 md:m-0">Frequency</label>
                 <div class="col-12 md:col-10">
                     <input pInputText id="frequency" formControlName="frequency" type="number" />
                 </div>
             </ng-container>
-            <ng-container *ngIf="!settingsUnlocked">
+            <ng-container *ngIf="frequencyTunable && !settingsUnlocked">
                 <label (click)="frequencySelect.show()" class="col-12 md:col-2 md:m-0 hover-next-input">Frequency</label>
                 <div class="col-12 md:col-10">
                     <p-select
@@ -23,17 +23,24 @@
                     ></p-select>
                 </div>
             </ng-container>
+            <ng-container *ngIf="!frequencyTunable">
+                <label for="frequency" class="col-12 md:col-2 md:m-0">Frequency</label>
+                <div class="col-12 md:col-10">
+                    <input pInputText id="frequency" formControlName="frequency" type="number" />
+                    <small class="block mt-1 text-color-secondary">Fixed by the hardware profile</small>
+                </div>
+            </ng-container>
         </div>
 
         <div class="field grid p-fluid">
-            <ng-container *ngIf="settingsUnlocked">
-                <label for="coreVoltage" class="col-12 md:col-2 md:m-0">Core Voltage</label>
+            <ng-container *ngIf="voltageTunable && settingsUnlocked">
+                <label for="coreVoltage" class="col-12 md:col-2 md:m-0">ASIC Voltage</label>
                 <div class="col-12 md:col-10">
                     <input pInputText id="coreVoltage" formControlName="coreVoltage" type="number" />
                 </div>
             </ng-container>
-            <ng-container *ngIf="!settingsUnlocked">
-                <label (click)="voltageSelect.show()" class="col-12 md:col-2 md:m-0 hover-next-input">Core Voltage</label>
+            <ng-container *ngIf="voltageTunable && !settingsUnlocked">
+                <label (click)="voltageSelect.show()" class="col-12 md:col-2 md:m-0 hover-next-input">ASIC Voltage</label>
                 <div class="col-12 md:col-10">
                     <p-select
                         [options]="selectVoltage"
@@ -42,6 +49,13 @@
                         formControlName="coreVoltage"
                         #voltageSelect
                     ></p-select>
+                </div>
+            </ng-container>
+            <ng-container *ngIf="!voltageTunable">
+                <label for="coreVoltage" class="col-12 md:col-2 md:m-0">ASIC Rail Voltage</label>
+                <div class="col-12 md:col-10">
+                    <input pInputText id="coreVoltage" formControlName="coreVoltage" type="number" />
+                    <small class="block mt-1 text-color-secondary">Fixed by the hardware profile</small>
                 </div>
             </ng-container>
         </div>
@@ -174,7 +188,7 @@
 
         <button pButton [disabled]="!savedChanges" (click)="restart()">Restart</button>
 
-        <button *ngIf="settingsUnlocked" pButton pButton="p-button-danger" (click)="toggleOverclockMode(false)"
+        <button *ngIf="settingsUnlocked && hasTunableAsicSettings" pButton pButton="p-button-danger" (click)="toggleOverclockMode(false)"
             class="p-button-danger" pTooltip="Return to safe preset values only">Disable Overclock Mode</button>
     </div>
 </form>

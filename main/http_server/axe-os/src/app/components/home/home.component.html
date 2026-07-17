@@ -288,7 +288,7 @@
                         <h6 class="flex justify-content-between mb-1">
                             Measured ASIC Voltage<span>{{info.coreVoltageActual}} V</span>
                         </h6>
-                        <p-progressbar [value]="(info.coreVoltageActual / 1.8) * 100" [styleClass]="'p-progressbar--thin'">
+                        <p-progressbar [value]="(info.coreVoltageActual / maxCoreVoltage) * 100" [styleClass]="'p-progressbar--thin'">
                             <ng-template pTemplate="content" let-value></ng-template>
                         </p-progressbar>
                     </div>

@@ -720,6 +720,22 @@ bool check_settings_and_update(const cJSON * const root, char **redirect_url)
                 result = false;
             }
         }
+        if (GLOBAL_STATE && cJSON_IsNumber(item) &&
+            key == NVS_CONFIG_ASIC_FREQUENCY &&
+            !device_config_accepts_frequency(
+                &GLOBAL_STATE->DEVICE_CONFIG, item->valuedouble)) {
+            ESP_LOGW(TAG, "ASIC frequency is fixed at %u MHz for this hardware",
+                     GLOBAL_STATE->DEVICE_CONFIG.family.asic.default_frequency_mhz);
+            result = false;
+        }
+        if (GLOBAL_STATE && cJSON_IsNumber(item) &&
+            key == NVS_CONFIG_ASIC_VOLTAGE &&
+            !device_config_accepts_voltage(
+                &GLOBAL_STATE->DEVICE_CONFIG, item->valueint)) {
+            ESP_LOGW(TAG, "ASIC supply voltage is fixed at %u mV for this hardware",
+                     GLOBAL_STATE->DEVICE_CONFIG.family.asic.default_voltage_mv);
+            result = false;
+        }
     }
 
     if (result) {

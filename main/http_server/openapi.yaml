@@ -572,8 +572,10 @@ components:
         - deviceModel
         - defaultFrequency
         - frequencyOptions
+        - frequencyTunable
         - defaultVoltage
         - voltageOptions
+        - voltageTunable
       properties:
         ASICModel:
           type: string
@@ -583,6 +585,7 @@ components:
             - BM1368
             - BM1370
             - BM1397
+            - BZM
           examples:
             - "BM1366"
         deviceModel:
@@ -610,6 +613,9 @@ components:
             type: number
           examples:
             - [400, 425, 450, 475, 485, 500, 525, 550, 575]
+        frequencyTunable:
+          type: boolean
+          description: Whether the hardware supports changing the ASIC clock
         defaultVoltage:
           type: number
           description: Default voltage for the ASIC model in millivolts
@@ -622,6 +628,9 @@ components:
             type: number
           examples:
             - [1100, 1150, 1200, 1250, 1300]
+        voltageTunable:
+          type: boolean
+          description: Whether the hardware supports changing the ASIC supply voltage
 
     SystemStatistics:
       type: object

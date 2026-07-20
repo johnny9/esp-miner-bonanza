@@ -509,8 +509,12 @@ static bzm_runtime_health_result_t sample_runtime_health_locked(void)
     }
 
     if (input.holding && input.reached_stage >= BZM_STAGE_SENSORS) {
-        input.telemetry_now_us = (uint64_t) esp_timer_get_time();
         input.telemetry_available = BZM_get_telemetry_snapshot(&input.telemetry);
+        /* Timestamp the completed snapshot, not the start of the copy. The
+         * transport can publish a fresh sample while this task is waiting for
+         * its mutex; taking `now` first made that valid sample appear a few
+         * hundred microseconds in the future and falsely latched safe-off. */
+        input.telemetry_now_us = (uint64_t) esp_timer_get_time();
         if (input.telemetry_available) {
             float temperature_sum = 0.0f;
             uint8_t temperature_count = 0;

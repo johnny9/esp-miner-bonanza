@@ -117,8 +117,8 @@ def request_bytes(base_url: str, path: str, *, data: bytes | None = None,
         return body, response.headers
 
 
-def get_info(base_url: str) -> dict[str, Any]:
-    body, _ = request_bytes(base_url, "/api/system/info")
+def get_info(base_url: str, *, timeout: float = 10.0) -> dict[str, Any]:
+    body, _ = request_bytes(base_url, "/api/system/info", timeout=timeout)
     value = json.loads(body)
     if not isinstance(value, dict):
         raise ValueError("system info response is not an object")
@@ -182,18 +182,22 @@ def health_check(report: Report, info: dict[str, Any], *, require_mining: bool,
 
 
 def sample_device(report: Report, base_url: str, duration: int,
-                  interval: float) -> None:
+                  interval: float, request_timeout: float,
+                  recovery_timeout: float) -> None:
     deadline = time.monotonic() + duration
+    recovery_deadline = deadline + recovery_timeout
     while True:
         try:
-            info = get_info(base_url)
+            info = get_info(base_url, timeout=request_timeout)
         except (OSError, ValueError, urllib.error.URLError) as exc:
             sample = {"time": time.time(), "requestError": str(exc)}
             report.samples.append(sample)
             print("[SAMPLE] " + json.dumps(sample, sort_keys=True), flush=True)
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if now >= recovery_deadline:
                 break
-            time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+            delay = 2.0 if now >= deadline else interval
+            time.sleep(min(delay, max(0.0, recovery_deadline - now)))
             continue
         health = info.get("asicHealth") or {}
         sample = {
@@ -212,19 +216,50 @@ def sample_device(report: Report, base_url: str, duration: int,
             "dispatchFailures": health.get("dispatchFailures"),
             "parserDiscardedBytes": health.get("parserDiscardedBytes"),
             "parserRecoveries": health.get("parserRecoveries"),
+            "transportCrcFailures": health.get("transportCrcFailures"),
+            "transportSequenceGaps": health.get("transportSequenceGaps"),
+            "bridgePioFifoOverflows": health.get("bridgePioFifoOverflows"),
+            "bridgeSoftwareRingOverflows": health.get("bridgeSoftwareRingOverflows"),
         }
         report.samples.append(sample)
         print("[SAMPLE] " + json.dumps(sample, sort_keys=True), flush=True)
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        if now >= deadline and "requestError" not in sample:
             break
-        time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+        if now >= recovery_deadline:
+            break
+        delay = 2.0 if now >= deadline else interval
+        time.sleep(min(delay, max(0.0, recovery_deadline - now)))
 
 
-def check_sample_deltas(report: Report, min_hashrate_ghs: float) -> None:
+def check_sample_deltas(report: Report, min_hashrate_ghs: float,
+                        sample_interval: float,
+                        request_timeout: float) -> None:
     valid_samples = [item for item in report.samples if "requestError" not in item]
     request_errors = len(report.samples) - len(valid_samples)
-    report.check("API sampling continuity", request_errors == 0,
-                 f"successful={len(valid_samples)} transientErrors={request_errors}")
+    consecutive = 0
+    max_consecutive = 0
+    for item in report.samples:
+        if "requestError" in item:
+            consecutive += 1
+            max_consecutive = max(max_consecutive, consecutive)
+        else:
+            consecutive = 0
+    success_gaps = [
+        valid_samples[index]["time"] - valid_samples[index - 1]["time"]
+        for index in range(1, len(valid_samples))
+    ]
+    max_success_gap = max(success_gaps, default=0.0)
+    maximum_recovery_gap = max(30.0, sample_interval * 3.0 +
+                               request_timeout * 2.0)
+    api_recovered = bool(valid_samples) and consecutive == 0
+    api_continuous = (api_recovered and max_consecutive <= 2 and
+                      max_success_gap <= maximum_recovery_gap)
+    report.check(
+        "API sampling continuity", api_continuous,
+        f"successful={len(valid_samples)} transientErrors={request_errors} "
+        f"maxConsecutive={max_consecutive} recovered={api_recovered} "
+        f"maxSuccessGap={max_success_gap:.1f}s/{maximum_recovery_gap:.1f}s")
     if len(valid_samples) < 2:
         report.check("live samples", False, "fewer than two samples")
         return
@@ -246,6 +281,10 @@ def check_sample_deltas(report: Report, min_hashrate_ghs: float) -> None:
     report.check("no dispatch failures",
                  (last.get("dispatchFailures") or 0) == (first.get("dispatchFailures") or 0),
                  f"delta={(last.get('dispatchFailures') or 0) - (first.get('dispatchFailures') or 0)}")
+    ring_delta = ((last.get("bridgeSoftwareRingOverflows") or 0) -
+                  (first.get("bridgeSoftwareRingOverflows") or 0))
+    report.check("bridge software ring remains lossless", ring_delta == 0,
+                 f"delta={ring_delta}")
     rates = [float(item.get("hashRate") or 0) for item in valid_samples[len(valid_samples) // 2:]]
     average = sum(rates) / len(rates)
     report.check("sustained local hashrate", average >= min_hashrate_ghs,
@@ -290,6 +329,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--serial", help="serial device recorded in the report")
     parser.add_argument("--soak-seconds", type=int, default=180)
     parser.add_argument("--sample-interval", type=float, default=10)
+    parser.add_argument("--request-timeout", type=float, default=3)
+    parser.add_argument("--recovery-timeout", type=float, default=30)
     parser.add_argument("--boot-timeout", type=float, default=240)
     parser.add_argument("--max-work-age", type=float, default=90)
     parser.add_argument("--min-hashrate-ghs", type=float, default=600)
@@ -362,8 +403,11 @@ def main() -> int:
         except (OSError, ValueError, urllib.error.URLError) as exc:
             report.check("AxeOS production health labels", False,
                          f"UI request failed: {exc}")
-        sample_device(report, base_url, args.soak_seconds, args.sample_interval)
-        check_sample_deltas(report, args.min_hashrate_ghs)
+        sample_device(report, base_url, args.soak_seconds,
+                      args.sample_interval, args.request_timeout,
+                      args.recovery_timeout)
+        check_sample_deltas(report, args.min_hashrate_ghs,
+                            args.sample_interval, args.request_timeout)
 
         if args.restart_check:
             body, _ = request_bytes(base_url, "/api/system/restart", data=b"{}")

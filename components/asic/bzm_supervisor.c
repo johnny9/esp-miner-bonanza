@@ -253,11 +253,20 @@ bool bzm_supervisor_clear_fault(bzm_supervisor_t * supervisor)
 bool bzm_supervisor_acquire_maintenance(bzm_supervisor_t * supervisor, bzm_supervisor_owner_t owner, uint64_t now_ms)
 {
     if (supervisor == NULL || !supervisor->initialized || !maintenance_owner(owner) ||
-        supervisor->owner != BZM_SUPERVISOR_OWNER_NONE) {
+        maintenance_owner(supervisor->owner)) {
         return false;
     }
-    if (!bzm_supervisor_request_validation(supervisor, BZM_STAGE_OFF_SAFE, false, false, 0, now_ms) ||
-        !bzm_supervisor_safe_off_verified(supervisor)) {
+
+    /* OTA and factory operations are normal production transitions. If the
+     * miner currently owns the hardware, first revoke dispatch and complete
+     * the same verified safe-off used by stop/restart. A maintenance owner is
+     * never preempted. Starting from NONE still runs a fresh OFF_SAFE stage so
+     * an old report cannot authorize maintenance. */
+    bool safe = supervisor->owner == BZM_SUPERVISOR_OWNER_NONE
+        ? bzm_supervisor_request_validation(supervisor, BZM_STAGE_OFF_SAFE,
+                                            false, false, 0, now_ms)
+        : bzm_supervisor_stop(supervisor, "maintenance requested");
+    if (!safe || !bzm_supervisor_safe_off_verified(supervisor)) {
         return false;
     }
     /* A latched runtime fault must not make a physically safe unit

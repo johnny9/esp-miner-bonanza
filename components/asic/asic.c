@@ -96,6 +96,8 @@ double ASIC_get_asic_job_frequency_ms(GlobalState *state)
 {
     const asic_driver_t *driver = active_driver(state);
     if (driver == NULL) return 500;
+    if (driver->ops.job_frequency_ms != NULL)
+        return driver->ops.job_frequency_ms(state);
 
     int asic_count = state->DEVICE_CONFIG.family.asic_count;
     int default_timeout =
@@ -124,6 +126,16 @@ void ASIC_read_registers(GlobalState *state)
     }
 }
 
+bool ASIC_get_hashrate_counters(GlobalState *state,
+                                uint32_t *difficulty_one_counters,
+                                size_t counter_count)
+{
+    const asic_driver_t *driver = active_driver(state);
+    return driver != NULL && driver->ops.hashrate_counter_snapshot != NULL &&
+           driver->ops.hashrate_counter_snapshot(
+               state, difficulty_one_counters, counter_count);
+}
+
 float ASIC_get_temperature(GlobalState *state)
 {
     const asic_driver_t *driver = active_driver(state);
@@ -131,12 +143,14 @@ float ASIC_get_temperature(GlobalState *state)
     return driver->ops.read_temperature(state);
 }
 
-void ASIC_record_local_result(GlobalState *state, bool valid,
+void ASIC_record_local_result(GlobalState *state, uint8_t asic_index,
+                              bool valid,
                               double nonce_difficulty)
 {
     const asic_driver_t *driver = active_driver(state);
     if (driver != NULL && driver->ops.record_local_result != NULL) {
-        driver->ops.record_local_result(state, valid, nonce_difficulty);
+        driver->ops.record_local_result(state, asic_index, valid,
+                                        nonce_difficulty);
     }
 }
 

@@ -127,7 +127,8 @@ static void account_share(void *context,
     scoreboard_add(&state->SYSTEM_MODULE.scoreboard, share->nonce_diff,
                    share->job_id, share->extranonce2, share->ntime,
                    share->nonce, share->version_bits);
-    ASIC_record_local_result(state, true, share->nonce_diff);
+    ASIC_record_local_result(state, result->asic_index, true,
+                             share->nonce_diff);
 }
 
 static const asic_result_callbacks_t RESULT_CALLBACKS = {
@@ -180,7 +181,7 @@ void ASIC_result_task(void *pvParameters)
         const asic_result_t *result = &event->data.share;
         asic_result_status_t status = handle_result(state, result);
         if (status == ASIC_RESULT_REJECTED_WORK) {
-            ASIC_record_local_result(state, false, 0.0);
+            ASIC_record_local_result(state, result->asic_index, false, 0.0);
             ESP_LOGW(TAG, "Invalid work result found, 0x%" PRIX64,
                      result->work_handle);
         }

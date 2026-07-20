@@ -58,9 +58,14 @@ static atomic_bool RUNNING_MAPPING_RECOVERY_PENDING;
 static atomic_uint_fast64_t RUNNING_LOCALLY_VALID_RESULTS;
 static atomic_uint_fast64_t RUNNING_LOCALLY_REJECTED_RESULTS;
 static atomic_uint_fast64_t RUNNING_DUPLICATE_RESULTS;
+static atomic_uint_fast64_t HASHRATE_DIFFICULTY_ONE_COUNTERS[BZM_MAX_ASIC_COUNT];
 static atomic_uint_fast32_t RUNNING_LOCAL_REJECTION_STREAK;
 static atomic_bool RUNNING_LOCAL_RECOVERY_PENDING;
 static asic_driver_health_t DRIVER_HEALTH;
+static uint16_t FAST_DISPATCH_REMAINING;
+
+#define BZM_FAST_JOB_INTERVAL_MS 10.0
+#define BZM_STEADY_JOB_INTERVAL_MS 1000.0
 
 #define BZM_RESULT_DEDUP_CAPACITY 256U
 typedef struct {
@@ -170,6 +175,10 @@ uint8_t BZM_init(GlobalState * state)
     atomic_store_explicit(&RUNNING_LOCALLY_VALID_RESULTS, 0, memory_order_relaxed);
     atomic_store_explicit(&RUNNING_LOCALLY_REJECTED_RESULTS, 0, memory_order_relaxed);
     atomic_store_explicit(&RUNNING_DUPLICATE_RESULTS, 0, memory_order_relaxed);
+    for (size_t i = 0; i < BZM_MAX_ASIC_COUNT; ++i) {
+        atomic_store_explicit(&HASHRATE_DIFFICULTY_ONE_COUNTERS[i], 0,
+                              memory_order_relaxed);
+    }
     atomic_store_explicit(&RUNNING_LOCAL_REJECTION_STREAK, 0, memory_order_seq_cst);
     atomic_store_explicit(&RUNNING_LOCAL_RECOVERY_PENDING, false, memory_order_seq_cst);
     reset_result_dedup();
@@ -219,6 +228,7 @@ uint8_t BZM_init(GlobalState * state)
 
     pthread_mutex_lock(&REACTOR_LOCK);
     INITIALIZED = bzm_reactor_init(&REACTOR, &state->asic_job_store, &config, &BZM_SERIAL_TRANSPORT_OPS, &TRANSPORT);
+    FAST_DISPATCH_REMAINING = INITIALIZED ? engine_count : 0;
     pthread_mutex_unlock(&REACTOR_LOCK);
     if (!INITIALIZED)
         return 0;
@@ -253,6 +263,7 @@ bool BZM_send_work(GlobalState * state, const mining_template_t * template)
             return false;
         }
         reset_result_dedup();
+        FAST_DISPATCH_REMAINING = REACTOR.config.engine_count;
     }
 
     bzm_work_t assigned_work;
@@ -271,6 +282,10 @@ bool BZM_send_work(GlobalState * state, const mining_template_t * template)
         REACTOR.next_engine == 0;
     size_t chip_engines = status == BZM_ASSIGN_OK
         ? TRANSPORT.asic_count : 0;
+    bool fast_dispatch_complete = status == BZM_ASSIGN_OK &&
+        FAST_DISPATCH_REMAINING == 1;
+    if (status == BZM_ASSIGN_OK && FAST_DISPATCH_REMAINING != 0)
+        --FAST_DISPATCH_REMAINING;
     pthread_mutex_unlock(&REACTOR_LOCK);
 
     if (status != BZM_ASSIGN_OK) {
@@ -281,6 +296,11 @@ bool BZM_send_work(GlobalState * state, const mining_template_t * template)
     if (rotation_complete) {
         atomic_fetch_add_explicit(&RUNNING_DISPATCH_BATCHES, 1,
                                   memory_order_relaxed);
+    }
+    if (fast_dispatch_complete) {
+        ESP_LOGI(TAG,
+                 "BZM independent engine rotation complete; steady refresh interval %.0f ms",
+                 BZM_STEADY_JOB_INTERVAL_MS);
     }
     atomic_fetch_add_explicit(&RUNNING_DISPATCHED_LOGICAL_ENGINES, 1,
                               memory_order_relaxed);
@@ -293,7 +313,11 @@ bool BZM_clear_work(GlobalState * state)
     (void) state;
     pthread_mutex_lock(&REACTOR_LOCK);
     bool cleared = !INITIALIZED || bzm_reactor_clear_work(&REACTOR);
-    if (cleared) reset_result_dedup();
+    if (cleared) {
+        reset_result_dedup();
+        FAST_DISPATCH_REMAINING = INITIALIZED
+            ? REACTOR.config.engine_count : 0;
+    }
     pthread_mutex_unlock(&REACTOR_LOCK);
     if (!cleared) {
         atomic_fetch_add_explicit(&RUNNING_DISPATCH_FAILURES, 1,
@@ -301,6 +325,16 @@ bool BZM_clear_work(GlobalState * state)
         ESP_LOGE(TAG, "BZM clean-job barrier failed");
     }
     return cleared;
+}
+
+double BZM_job_frequency_ms(GlobalState *state)
+{
+    (void)state;
+    pthread_mutex_lock(&REACTOR_LOCK);
+    bool fast_dispatch = INITIALIZED && FAST_DISPATCH_REMAINING != 0;
+    pthread_mutex_unlock(&REACTOR_LOCK);
+    return fast_dispatch ? BZM_FAST_JOB_INTERVAL_MS
+                         : BZM_STEADY_JOB_INTERVAL_MS;
 }
 
 asic_event_t * BZM_process_work(GlobalState * state)
@@ -420,13 +454,40 @@ void BZM_running_record_rejection(void)
                               memory_order_seq_cst);
 }
 
-void BZM_record_local_result(GlobalState *state, bool valid,
+bool BZM_hashrate_counter_snapshot(GlobalState *state,
+                                   uint32_t *difficulty_one_counters,
+                                   size_t counter_count)
+{
+    if (state == NULL || difficulty_one_counters == NULL ||
+        counter_count < state->DEVICE_CONFIG.family.asic_count ||
+        state->DEVICE_CONFIG.family.asic_count > BZM_MAX_ASIC_COUNT) {
+        return false;
+    }
+    for (size_t i = 0; i < state->DEVICE_CONFIG.family.asic_count; ++i) {
+        difficulty_one_counters[i] = (uint32_t)atomic_load_explicit(
+            &HASHRATE_DIFFICULTY_ONE_COUNTERS[i], memory_order_relaxed);
+    }
+    return true;
+}
+
+void BZM_record_local_result(GlobalState *state, uint8_t asic_index,
+                             bool valid,
                              double nonce_difficulty)
 {
     (void)state;
-    if (valid && bzm_running_result_meets_proof(
+    if (asic_index < BZM_MAX_ASIC_COUNT && valid &&
+        bzm_running_result_meets_proof(
                      nonce_difficulty,
                      (double)CONFIG_BZM_1002_MIN_NONCE_DIFFICULTY)) {
+        /* One result passing the programmed leading-zero filter represents
+         * 2^(lead_zeros - 32) difficulty-one hash counters. This feeds the
+         * normal ESP-Miner/AxeOS hashrate monitor without trusting corrupted
+         * or merely mapped ASIC frames. */
+        const uint64_t difficulty_one_units =
+            UINT64_C(1) << (CONFIG_BZM_1002_LEAD_ZEROS - 32);
+        atomic_fetch_add_explicit(
+            &HASHRATE_DIFFICULTY_ONE_COUNTERS[asic_index],
+            difficulty_one_units, memory_order_relaxed);
         BZM_running_record_proof();
     } else {
         BZM_running_record_rejection();

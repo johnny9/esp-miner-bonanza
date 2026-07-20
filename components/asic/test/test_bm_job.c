@@ -487,10 +487,14 @@ TEST_CASE("ASIC driver table exposes operations without switch dispatch",
         TEST_ASSERT_NOT_NULL(driver->ops.send_work);
         if (driver->id == BZM) {
             TEST_ASSERT_NOT_NULL(driver->ops.clear_work);
+            TEST_ASSERT_NOT_NULL(driver->ops.job_frequency_ms);
+            TEST_ASSERT_NOT_NULL(driver->ops.hashrate_counter_snapshot);
             TEST_ASSERT_NOT_NULL(driver->ops.record_local_result);
             TEST_ASSERT_NOT_NULL(driver->ops.health_snapshot);
         } else {
             TEST_ASSERT_NULL(driver->ops.clear_work);
+            TEST_ASSERT_NULL(driver->ops.job_frequency_ms);
+            TEST_ASSERT_NULL(driver->ops.hashrate_counter_snapshot);
             TEST_ASSERT_NULL(driver->ops.record_local_result);
             TEST_ASSERT_NULL(driver->ops.health_snapshot);
         }

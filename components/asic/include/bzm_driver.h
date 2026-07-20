@@ -18,15 +18,20 @@ uint8_t BZM_init(GlobalState * state);
 int BZM_set_max_baud(void);
 bool BZM_send_work(GlobalState * state, const mining_template_t * template);
 bool BZM_clear_work(GlobalState * state);
+double BZM_job_frequency_ms(GlobalState *state);
 asic_event_t * BZM_process_work(GlobalState * state);
 float BZM_read_temperature(GlobalState * state);
+bool BZM_hashrate_counter_snapshot(GlobalState *state,
+                                   uint32_t *difficulty_one_counters,
+                                   size_t counter_count);
 
 /* Lock-free Stage-7 evidence counters. A baseline/current delta represents
  * exactly one RUNNING validation attempt. */
 bool BZM_running_stats_snapshot(bzm_running_stats_t * stats);
 void BZM_running_record_proof(void);
 void BZM_running_record_rejection(void);
-void BZM_record_local_result(GlobalState *state, bool valid,
+void BZM_record_local_result(GlobalState *state, uint8_t asic_index,
+                             bool valid,
                              double nonce_difficulty);
 
 /* Thread-safe copies of the singleton transport's receive diagnostics. */

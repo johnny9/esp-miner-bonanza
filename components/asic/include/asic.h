@@ -24,8 +24,12 @@ void ASIC_set_frequency(GlobalState * GLOBAL_STATE);
 void ASIC_set_nonce_space(GlobalState * GLOBAL_STATE);
 double ASIC_get_asic_job_frequency_ms(GlobalState * GLOBAL_STATE);
 void ASIC_read_registers(GlobalState * GLOBAL_STATE);
+bool ASIC_get_hashrate_counters(GlobalState *GLOBAL_STATE,
+                                uint32_t *difficulty_one_counters,
+                                size_t counter_count);
 float ASIC_get_temperature(GlobalState * GLOBAL_STATE);
-void ASIC_record_local_result(GlobalState *GLOBAL_STATE, bool valid,
+void ASIC_record_local_result(GlobalState *GLOBAL_STATE, uint8_t asic_index,
+                              bool valid,
                               double nonce_difficulty);
 bool ASIC_get_health(GlobalState *GLOBAL_STATE,
                      asic_driver_health_t *health);

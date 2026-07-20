@@ -229,11 +229,20 @@ def check_sample_deltas(report: Report, min_hashrate_ghs: float) -> None:
         report.check("live samples", False, "fewer than two samples")
         return
     first, last = valid_samples[0], valid_samples[-1]
+    non_mining = [item.get("lifecycle") for item in valid_samples
+                  if item.get("lifecycle") != "MINING"]
+    report.check("lifecycle remains mining", not non_mining,
+                 "all samples MINING" if not non_mining else
+                 f"non-mining samples={non_mining}")
     valid_delta = (last.get("locallyValidResults") or 0) - (first.get("locallyValidResults") or 0)
     report.check("locally valid results increase", valid_delta > 0, f"delta={valid_delta}")
-    report.check("no duplicate result delivery",
-                 (last.get("duplicates") or 0) == (first.get("duplicates") or 0),
-                 f"delta={(last.get('duplicates') or 0) - (first.get('duplicates') or 0)}")
+    duplicate_delta = ((last.get("duplicates") or 0) -
+                       (first.get("duplicates") or 0))
+    rejected_share_delta = ((last.get("sharesRejected") or 0) -
+                            (first.get("sharesRejected") or 0))
+    report.check("no duplicate share submission", rejected_share_delta == 0,
+                 f"raw duplicate results suppressed={duplicate_delta} "
+                 f"pool rejected-share delta={rejected_share_delta}")
     report.check("no dispatch failures",
                  (last.get("dispatchFailures") or 0) == (first.get("dispatchFailures") or 0),
                  f"delta={(last.get('dispatchFailures') or 0) - (first.get('dispatchFailures') or 0)}")

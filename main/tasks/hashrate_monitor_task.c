@@ -157,6 +157,8 @@ void hashrate_monitor_task(void *pvParameters)
         HASHRATE_MONITOR_MODULE->domain_measurements[asic_nr] = data + (asic_nr * hash_domains);
     }
     HASHRATE_MONITOR_MODULE->error_measurement = heap_caps_malloc(asic_count * sizeof(measurement_t), MALLOC_CAP_SPIRAM);
+    uint32_t *driver_hash_counters = heap_caps_malloc(
+        asic_count * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
 
     pthread_mutex_init(&HASHRATE_MONITOR_MODULE->lock, NULL);
     HASHRATE_MONITOR_MODULE->is_initialized = true;
@@ -180,8 +182,24 @@ void hashrate_monitor_task(void *pvParameters)
         was_asic_initialized = is_asic_initialized;
 
         if (is_asic_initialized) {
-            ASIC_read_registers(GLOBAL_STATE);
-            vTaskDelay(100 / portTICK_PERIOD_MS);
+            bool counter_snapshot = ASIC_get_hashrate_counters(
+                GLOBAL_STATE, driver_hash_counters, asic_count);
+            if (counter_snapshot) {
+                uint64_t timestamp_us = esp_timer_get_time();
+                pthread_mutex_lock(&HASHRATE_MONITOR_MODULE->lock);
+                for (int asic_nr = 0; asic_nr < asic_count; ++asic_nr) {
+                    update_hash_counter(
+                        &HASHRATE_MONITOR_MODULE->total_measurement[asic_nr],
+                        driver_hash_counters[asic_nr], timestamp_us);
+                    update_hash_counter(
+                        &HASHRATE_MONITOR_MODULE->domain_measurements[asic_nr][0],
+                        driver_hash_counters[asic_nr], timestamp_us);
+                }
+                pthread_mutex_unlock(&HASHRATE_MONITOR_MODULE->lock);
+            } else {
+                ASIC_read_registers(GLOBAL_STATE);
+                vTaskDelay(100 / portTICK_PERIOD_MS);
+            }
 
             pthread_mutex_lock(&HASHRATE_MONITOR_MODULE->lock);
             float current_hashrate = sum_hashrates(HASHRATE_MONITOR_MODULE->total_measurement, asic_count);

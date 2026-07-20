@@ -2,15 +2,24 @@ menu "Bitaxe Configuration"
 
     menu "Bitaxe 1002 Bonanza production safety"
         config BZM_1002_PROOF_TIMEOUT_SECONDS
-            int "Mining proof and recovery timeout (seconds)"
+            int "Initial mining proof timeout (seconds)"
             range 1 300
             default 15
             help
                 Maximum RUNNING time allowed to prove one complete four-ASIC
                 work dispatch and the configured number of locally valid ASIC
-                results. After proof, the same bound applies independently to
-                each new recoverable result-corruption episode. Initial proof
-                or recovery expiry is BAD and forces safe-off.
+                results. Missing initial proof is BAD and forces safe-off.
+
+        config BZM_1002_RESULT_RECOVERY_TIMEOUT_MS
+            int "Maximum time without locally validated result proof (milliseconds)"
+            range 1000 30000
+            default 5000
+            help
+                After mining proof has been established, tolerate bursts of
+                unchecksummed nonce-like frames only while a new locally
+                validated result arrives inside this bound. Raw mapping and
+                local-rejection streaks remain visible diagnostics; they are
+                not safety evidence on their own.
 
         config BZM_1002_MIN_VALID_RESULTS
             int "Minimum locally valid mining results"
@@ -21,26 +30,27 @@ menu "Bitaxe Configuration"
                 active generation and pass local nonce/work validation.
 
         config BZM_1002_MAX_LOCAL_REJECTIONS
-            int "Maximum consecutive locally rejected results"
+            int "Diagnostic locally rejected-result streak threshold"
             range 0 100
             default 1
             help
                 Maximum consecutive current-work ASIC results that may fail
                 local nonce/work validation. A later locally valid nonce
                 resets the streak and proves recovery; the lifetime total
-                remains visible. Exceeding this streak is BAD and forces
-                safe-off. Non-nonce status frames are not results.
+                remains visible. The proof-recovery timeout, rather than an
+                unchecksummed raw-frame count, forces safe-off. Non-nonce
+                status frames are not results.
 
         config BZM_1002_MAX_MAPPING_REJECTIONS
-            int "Maximum consecutive result-attribution rejections"
+            int "Diagnostic result-attribution rejection streak threshold"
             range 1 100
             default 2
             help
                 Maximum consecutive unattributable nonce-like frames when
                 mapping recovery is enabled. A later locally valid nonce
                 resets the streak while the lifetime total remains visible.
-                Exceeding this streak, or failing to recover before the proof
-                timeout, is BAD and forces safe-off.
+                Failing to recover before the result-proof recovery timeout
+                is BAD and forces safe-off.
 
         config BZM_1002_MIN_NONCE_DIFFICULTY
             int "Minimum locally verified nonce difficulty"

@@ -101,6 +101,7 @@ static bzm_running_evidence_config_t running_evidence_config(void)
         .maximum_mapping_rejections = CONFIG_BZM_1002_MAX_MAPPING_REJECTIONS,
         .maximum_local_rejections = CONFIG_BZM_1002_MAX_LOCAL_REJECTIONS,
         .proof_timeout_ms = CONFIG_BZM_1002_PROOF_TIMEOUT_SECONDS * 1000U,
+        .recovery_timeout_ms = CONFIG_BZM_1002_RESULT_RECOVERY_TIMEOUT_MS,
     };
 }
 

@@ -31,6 +31,7 @@ typedef struct
     uint32_t maximum_mapping_rejections;
     uint32_t maximum_local_rejections;
     uint32_t proof_timeout_ms;
+    uint32_t recovery_timeout_ms;
 } bzm_running_evidence_config_t;
 
 typedef enum
@@ -81,8 +82,10 @@ void bzm_running_evidence_lifecycle_init(bzm_running_evidence_lifecycle_t * life
  * that sampling instant. That recovery and each later one gets a fresh
  * timeout. New locally verified proof demonstrates that any prior result
  * recovery completed; if another bounded rejection is already pending at the
- * next sample, its timeout starts fresh. Over-limit streaks and all structural
- * faults remain immediately BAD. */
+ * next sample, its shorter recovery timeout starts fresh. Raw rejection
+ * streaks remain diagnostic because the unchecksummed ASIC stream can produce
+ * bursts of nonce-like corruption; dispatch and counter faults remain
+ * immediately BAD. */
 bzm_running_evidence_result_t bzm_running_evidence_track(
     bzm_running_evidence_lifecycle_t * lifecycle,
     const bzm_running_stats_t * baseline,

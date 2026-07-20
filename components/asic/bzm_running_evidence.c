@@ -81,6 +81,7 @@ bzm_running_evidence_result_t bzm_running_evidence_evaluate(
     if (baseline == NULL || current == NULL || config == NULL ||
         config->required_chip_engine_writes == 0 ||
         config->minimum_valid_results == 0 || config->proof_timeout_ms == 0 ||
+        config->recovery_timeout_ms == 0 ||
         (config->allow_mapping_recovery &&
          config->maximum_mapping_rejections == 0)) {
         return result_with(BZM_RUNNING_EVIDENCE_BAD,
@@ -109,27 +110,6 @@ bzm_running_evidence_result_t bzm_running_evidence_evaluate(
                  (unsigned long long) observed.mapping_rejections);
         return result_with(BZM_RUNNING_EVIDENCE_BAD,
                            BZM_RUNNING_EVIDENCE_FAULT_MAPPING,
-                           &observed, elapsed_ms, detail);
-    }
-    if (observed.mapping_rejection_streak >
-        config->maximum_mapping_rejections) {
-        snprintf(detail, sizeof(detail),
-                 "%u consecutive ASIC result frame(s) could not be attributed to current work; total=%llu maximum streak=%u",
-                 (unsigned) observed.mapping_rejection_streak,
-                 (unsigned long long) observed.mapping_rejections,
-                 (unsigned) config->maximum_mapping_rejections);
-        return result_with(BZM_RUNNING_EVIDENCE_BAD,
-                           BZM_RUNNING_EVIDENCE_FAULT_MAPPING,
-                           &observed, elapsed_ms, detail);
-    }
-    if (observed.local_rejection_streak > config->maximum_local_rejections) {
-        snprintf(detail, sizeof(detail),
-                 "%u consecutive mapped result(s) failed local validation; total=%llu maximum streak=%u",
-                 (unsigned) observed.local_rejection_streak,
-                 (unsigned long long) observed.locally_rejected_results,
-                 (unsigned) config->maximum_local_rejections);
-        return result_with(BZM_RUNNING_EVIDENCE_BAD,
-                           BZM_RUNNING_EVIDENCE_FAULT_LOCAL_VALIDATION,
                            &observed, elapsed_ms, detail);
     }
     if (observed.mapping_rejections != 0 && observed.mapping_recovery_pending) {
@@ -286,7 +266,10 @@ bzm_running_evidence_result_t bzm_running_evidence_track(
     lifecycle->last_locally_valid_results = result.observed.locally_valid_results;
     uint64_t recovery_elapsed_ms = now_ms >= lifecycle->recovery_started_at_ms
         ? now_ms - lifecycle->recovery_started_at_ms : UINT64_MAX;
-    result = bzm_running_evidence_evaluate(baseline, current, config,
+    bzm_running_evidence_config_t recovery_config = *config;
+    recovery_config.proof_timeout_ms = config->recovery_timeout_ms;
+    result = bzm_running_evidence_evaluate(baseline, current,
+                                           &recovery_config,
                                            recovery_elapsed_ms);
     result.elapsed_ms = overall_elapsed_ms;
     if (result.status == BZM_RUNNING_EVIDENCE_PENDING) {
@@ -297,7 +280,7 @@ bzm_running_evidence_result_t bzm_running_evidence_track(
         snprintf(result.detail, sizeof(result.detail),
                  "proof retained; bounded recovery %llu/%u ms: %.90s",
                  (unsigned long long) recovery_elapsed_ms,
-                 config != NULL ? (unsigned) config->proof_timeout_ms : 0U,
+                 config != NULL ? (unsigned) config->recovery_timeout_ms : 0U,
                  pending);
     }
     return result;

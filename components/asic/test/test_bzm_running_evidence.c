@@ -11,6 +11,7 @@ static const bzm_running_evidence_config_t CONFIG = {
     .maximum_mapping_rejections = 2,
     .maximum_local_rejections = 1,
     .proof_timeout_ms = 15000,
+    .recovery_timeout_ms = 15000,
 };
 
 TEST_CASE("BZM Stage-7 proof floor classifies valid and rejected difficulty",
@@ -93,8 +94,8 @@ TEST_CASE("BZM Stage-7 evidence rejects asymmetric or unattributed work",
     current.locally_rejected_results = 2;
     current.local_rejection_streak = 2;
     result = bzm_running_evidence_evaluate(&baseline, &current, &CONFIG, 10);
-    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_BAD, result.status);
-    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_FAULT_LOCAL_VALIDATION, result.fault);
+    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_PENDING, result.status);
+    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_FAULT_NONE, result.fault);
 }
 
 TEST_CASE("BZM Stage-7 evidence accepts one transient rejection with valid proof",
@@ -123,6 +124,7 @@ TEST_CASE("BZM Stage-7 mapping recovery requires valid proof after the last reje
     bzm_running_evidence_config_t recovery = CONFIG;
     recovery.allow_mapping_recovery = true;
     recovery.maximum_mapping_rejections = 8;
+    recovery.recovery_timeout_ms = 5000;
     bzm_running_stats_t baseline = {0};
     bzm_running_stats_t current = {
         .dispatch_batches = 1,
@@ -152,7 +154,7 @@ TEST_CASE("BZM Stage-7 mapping recovery requires valid proof after the last reje
     TEST_ASSERT_FALSE(result.observed.mapping_recovery_pending);
 }
 
-TEST_CASE("BZM Stage-7 mapping recovery rejects continuous or unrecovered corruption",
+TEST_CASE("BZM Stage-7 mapping recovery bounds corruption by proof time rather than raw streak",
           "[asic][bzm][running][evidence]")
 {
     bzm_running_evidence_config_t recovery = CONFIG;
@@ -167,8 +169,8 @@ TEST_CASE("BZM Stage-7 mapping recovery rejects continuous or unrecovered corrup
 
     bzm_running_evidence_result_t result =
         bzm_running_evidence_evaluate(&baseline, &current, &recovery, 100);
-    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_BAD, result.status);
-    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_FAULT_MAPPING, result.fault);
+    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_PENDING, result.status);
+    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_FAULT_NONE, result.fault);
 
     current.mapping_rejection_streak = 7;
     result = bzm_running_evidence_evaluate(
@@ -208,6 +210,10 @@ TEST_CASE("BZM Stage-7 local rejection streak recovers only after valid proof",
     current.local_rejection_streak = 2;
     current.local_recovery_pending = true;
     result = bzm_running_evidence_evaluate(&baseline, &current, &CONFIG, 300);
+    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_PENDING, result.status);
+    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_FAULT_NONE, result.fault);
+    result = bzm_running_evidence_evaluate(
+        &baseline, &current, &CONFIG, CONFIG.proof_timeout_ms);
     TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_BAD, result.status);
     TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_FAULT_LOCAL_VALIDATION, result.fault);
 }
@@ -251,6 +257,12 @@ TEST_CASE("BZM Stage-7 evidence rejects rollback and invalid configuration",
     result = bzm_running_evidence_evaluate(&current, &current, &invalid, 0);
     TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_BAD, result.status);
     TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_FAULT_INVALID_CONFIGURATION, result.fault);
+
+    invalid = CONFIG;
+    invalid.recovery_timeout_ms = 0;
+    result = bzm_running_evidence_evaluate(&current, &current, &invalid, 0);
+    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_BAD, result.status);
+    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_FAULT_INVALID_CONFIGURATION, result.fault);
 }
 
 TEST_CASE("BZM Stage-7 lifecycle retains proof only during bounded recoverable bursts",
@@ -259,6 +271,7 @@ TEST_CASE("BZM Stage-7 lifecycle retains proof only during bounded recoverable b
     bzm_running_evidence_config_t recovery = CONFIG;
     recovery.allow_mapping_recovery = true;
     recovery.maximum_mapping_rejections = 8;
+    recovery.recovery_timeout_ms = 5000;
     bzm_running_stats_t baseline = {0};
     bzm_running_stats_t current = {
         .dispatch_batches = 2,
@@ -286,10 +299,10 @@ TEST_CASE("BZM Stage-7 lifecycle retains proof only during bounded recoverable b
     TEST_ASSERT_NOT_NULL(strstr(result.detail, "proof retained"));
 
     result = bzm_running_evidence_track(&lifecycle, &baseline, &current,
-                                        &recovery, 1000, 17999);
+                                        &recovery, 1000, 7999);
     TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_GOOD, result.status);
     result = bzm_running_evidence_track(&lifecycle, &baseline, &current,
-                                        &recovery, 1000, 18000);
+                                        &recovery, 1000, 8000);
     TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_BAD, result.status);
     TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_FAULT_MAPPING, result.fault);
 
@@ -298,7 +311,7 @@ TEST_CASE("BZM Stage-7 lifecycle retains proof only during bounded recoverable b
     current.mapped_results++;
     current.locally_valid_results++;
     result = bzm_running_evidence_track(&lifecycle, &baseline, &current,
-                                        &recovery, 1000, 18001);
+                                        &recovery, 1000, 8001);
     TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_GOOD, result.status);
     TEST_ASSERT_FALSE(lifecycle.recovery_active);
 
@@ -306,7 +319,11 @@ TEST_CASE("BZM Stage-7 lifecycle retains proof only during bounded recoverable b
     current.mapping_rejection_streak = 9;
     current.mapping_recovery_pending = true;
     result = bzm_running_evidence_track(&lifecycle, &baseline, &current,
-                                        &recovery, 1000, 18002);
+                                        &recovery, 1000, 8002);
+    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_GOOD, result.status);
+    TEST_ASSERT_TRUE(lifecycle.recovery_active);
+    result = bzm_running_evidence_track(&lifecycle, &baseline, &current,
+                                        &recovery, 1000, 13002);
     TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_BAD, result.status);
     TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_FAULT_MAPPING, result.fault);
 }

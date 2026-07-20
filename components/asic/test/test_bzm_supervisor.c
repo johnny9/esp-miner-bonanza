@@ -250,6 +250,24 @@ TEST_CASE("BZM maintenance safe-off failures latch closed",
         &release, BZM_STAGE_POWER_RAIL, true, true, 1000, 1));
 }
 
+TEST_CASE("BZM maintenance clears a fault only after fresh safe off",
+          "[asic][bzm][supervisor][maintenance][fault]")
+{
+    simulated_hardware_t hardware = {.fail_stage = BZM_STAGE_COUNT};
+    bzm_supervisor_t supervisor = supervisor_for(&hardware);
+    TEST_ASSERT_TRUE(bzm_supervisor_latch_fault(
+        &supervisor, 42, "injected runtime fault"));
+    TEST_ASSERT_TRUE(supervisor.fault_latched);
+    TEST_ASSERT_EQUAL_UINT32(1, hardware.safe_off_calls);
+
+    TEST_ASSERT_TRUE(bzm_supervisor_acquire_maintenance(
+        &supervisor, BZM_SUPERVISOR_OWNER_ESP_OTA, 100));
+    TEST_ASSERT_FALSE(supervisor.fault_latched);
+    TEST_ASSERT_EQUAL(BZM_SUPERVISOR_OWNER_ESP_OTA, supervisor.owner);
+    TEST_ASSERT_TRUE(bzm_supervisor_safe_off_verified(&supervisor));
+    TEST_ASSERT_EQUAL_UINT32(2, hardware.safe_off_calls);
+}
+
 TEST_CASE("BZM restart preempts mining only after verified safe off",
           "[asic][bzm][supervisor][restart]")
 {

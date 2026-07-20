@@ -252,12 +252,18 @@ bool bzm_supervisor_clear_fault(bzm_supervisor_t * supervisor)
 
 bool bzm_supervisor_acquire_maintenance(bzm_supervisor_t * supervisor, bzm_supervisor_owner_t owner, uint64_t now_ms)
 {
-    if (supervisor == NULL || !supervisor->initialized || !maintenance_owner(owner) || supervisor->fault_latched ||
+    if (supervisor == NULL || !supervisor->initialized || !maintenance_owner(owner) ||
         supervisor->owner != BZM_SUPERVISOR_OWNER_NONE) {
         return false;
     }
     if (!bzm_supervisor_request_validation(supervisor, BZM_STAGE_OFF_SAFE, false, false, 0, now_ms) ||
         !bzm_supervisor_safe_off_verified(supervisor)) {
+        return false;
+    }
+    /* A latched runtime fault must not make a physically safe unit
+     * unmaintainable. Clear it only after this acquisition has forced and
+     * freshly verified OFF_SAFE; shutdown-unverified faults still fail above. */
+    if (supervisor->fault_latched && !bzm_supervisor_clear_fault(supervisor)) {
         return false;
     }
     supervisor->owner = owner;

@@ -428,7 +428,9 @@ bool bzm_reactor_map_result(bzm_reactor_t *reactor,
         (!previous_batch &&
          assignment->logical_engine_id != logical_engine_id) ||
         assignment->state != BZM_ENGINE_ASSIGNED ||
-        assignment->epoch != reactor->epoch) {
+        assignment->epoch != reactor->epoch ||
+        !asic_job_store_contains(reactor->job_store,
+                                 assignment->handle)) {
         return false;
     }
 

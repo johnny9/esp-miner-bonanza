@@ -13,7 +13,7 @@
 #include "unity.h"
 #include "utils.h"
 
-#define BZM_TEST_MAX_WRITES (BZM_ENGINES_PER_ASIC + 4U)
+#define BZM_TEST_MAX_WRITES (ASIC_JOB_STORE_CAPACITY + 4U)
 
 typedef struct {
     size_t write_count;
@@ -802,6 +802,49 @@ TEST_CASE("BZM assigns independent templates and retains one prior job per engin
     mining_template_free(&engine0_next);
     mining_template_free(&engine1_first);
     mining_template_free(&engine0_first);
+    free(transport);
+    free(reactor);
+    delete_store(store);
+}
+
+TEST_CASE("BZM rejects delayed assignments after their bounded store slot is reused",
+          "[asic][bzm][reactor][scheduler][result]")
+{
+    asic_job_store_t *store = new_store();
+    simulated_transport_t *transport = new_transport();
+    bzm_reactor_t *reactor = new_reactor(
+        store, transport, BZM_ENGINES_PER_ASIC);
+    mining_template_t template = bzm_template("bounded-history", false);
+
+    for (size_t index = 0; index < BZM_ENGINES_PER_ASIC; ++index) {
+        TEST_ASSERT_EQUAL(BZM_ASSIGN_OK,
+                          bzm_reactor_assign(reactor, &template, NULL));
+    }
+    const bzm_work_t first = transport->work[0];
+
+    /* Twenty spare slots retain five seconds of history at the production
+     * 250 ms assignment cadence. The next assignment safely retires the
+     * oldest handle instead of emitting an event whose template is gone. */
+    for (size_t index = 0;
+         index <= ASIC_JOB_STORE_CAPACITY - BZM_ENGINES_PER_ASIC;
+         ++index) {
+        TEST_ASSERT_EQUAL(BZM_ASSIGN_OK,
+                          bzm_reactor_assign(reactor, &template, NULL));
+    }
+
+    bzm_raw_result_t stale = {
+        .asic_id = BZM_FIRST_ASIC_ID,
+        .engine_id = first.engine_id,
+        .status = 8,
+        .nonce = 0x1234,
+        .sequence_id = 0,
+        .time = 16,
+    };
+    asic_event_t event;
+    TEST_ASSERT_FALSE(bzm_reactor_map_result(reactor, &stale, &event));
+    TEST_ASSERT_FALSE(asic_job_store_contains(store, first.source.handle));
+
+    mining_template_free(&template);
     free(transport);
     free(reactor);
     delete_store(store);

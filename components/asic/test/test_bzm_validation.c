@@ -52,19 +52,11 @@ static bzm_validation_policy_t policy_for(bzm_validation_stage_t target)
     };
 }
 
-TEST_CASE("BZM validation stages publish configuration and good/bad criteria", "[asic][bzm][validation][contract]")
+TEST_CASE("BZM internal startup steps have stable diagnostic names", "[asic][bzm][controller]")
 {
     for (int stage = 0; stage < BZM_STAGE_COUNT; ++stage) {
-        const bzm_stage_definition_t * definition = bzm_validation_stage_definition(stage);
-        TEST_ASSERT_NOT_NULL(definition);
-        TEST_ASSERT_EQUAL(stage, definition->stage);
-        TEST_ASSERT_NOT_EQUAL(0, strlen(definition->name));
-        TEST_ASSERT_NOT_EQUAL(0, strlen(definition->configuration));
-        TEST_ASSERT_NOT_EQUAL(0, strlen(definition->good_criteria));
-        TEST_ASSERT_NOT_EQUAL(0, strlen(definition->bad_criteria));
-        TEST_ASSERT_EQUAL_STRING(definition->name, bzm_validation_stage_name(stage));
+        TEST_ASSERT_NOT_EQUAL(0, strlen(bzm_validation_stage_name(stage)));
     }
-    TEST_ASSERT_NULL(bzm_validation_stage_definition(BZM_STAGE_COUNT));
     TEST_ASSERT_EQUAL_STRING("INVALID_STAGE", bzm_validation_stage_name(BZM_STAGE_COUNT));
     TEST_ASSERT_EQUAL_STRING("GOOD", bzm_validation_status_name(BZM_CHECK_GOOD));
     TEST_ASSERT_EQUAL_STRING("INDEPENDENT_KILL_REQUIRED", bzm_validation_code_name(BZM_VALIDATION_CODE_INDEPENDENT_KILL_REQUIRED));

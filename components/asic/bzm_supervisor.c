@@ -167,7 +167,7 @@ bool bzm_supervisor_request_validation(bzm_supervisor_t * supervisor, bzm_valida
             supervisor->fault_latched = true;
             if (supervisor->fault_code == 0) {
                 supervisor->fault_code = BZM_VALIDATION_CODE_STAGE_FAILED;
-                set_fault_detail(supervisor, "validation stage failed");
+                set_fault_detail(supervisor, "startup step failed");
             }
         }
         if (supervisor->fault_latched && supervisor->report.state != BZM_VALIDATION_SHUTDOWN_UNVERIFIED) {

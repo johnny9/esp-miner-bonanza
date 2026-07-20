@@ -57,71 +57,22 @@ static atomic_uint_fast32_t RUNNING_MAPPING_REJECTION_STREAK;
 static atomic_bool RUNNING_MAPPING_RECOVERY_PENDING;
 static atomic_uint_fast64_t RUNNING_LOCALLY_VALID_RESULTS;
 static atomic_uint_fast64_t RUNNING_LOCALLY_REJECTED_RESULTS;
+static atomic_uint_fast64_t RUNNING_DUPLICATE_RESULTS;
 static atomic_uint_fast32_t RUNNING_LOCAL_REJECTION_STREAK;
 static atomic_bool RUNNING_LOCAL_RECOVERY_PENDING;
+static asic_driver_health_t DRIVER_HEALTH;
 
-#ifdef CONFIG_BZM_1002_LAB_VALIDATION
-static void lab_format_hex(const uint8_t *bytes, size_t length,
-                           char *hex, size_t hex_capacity)
-{
-    static const char digits[] = "0123456789abcdef";
-    if (bytes == NULL || hex == NULL || hex_capacity < length * 2 + 1) {
-        return;
-    }
-    for (size_t i = 0; i < length; ++i) {
-        hex[i * 2] = digits[bytes[i] >> 4];
-        hex[i * 2 + 1] = digits[bytes[i] & 0x0f];
-    }
-    hex[length * 2] = '\0';
-}
+#define BZM_RESULT_DEDUP_CAPACITY 256U
+typedef struct {
+    bool valid;
+    asic_work_handle_t work_handle;
+    uint32_t nonce;
+    uint32_t final_ntime;
+    uint32_t final_version;
+} bzm_result_identity_t;
+static bzm_result_identity_t RESULT_DEDUP[BZM_RESULT_DEDUP_CAPACITY];
+static size_t RESULT_DEDUP_NEXT;
 
-static void lab_log_stage7_template(const mining_template_t *template)
-{
-    if (template == NULL) {
-        return;
-    }
-    asic_work_t source = {
-        .handle = 1,
-        .template = template,
-    };
-    bzm_work_t work;
-    if (!bzm_work_build(&source, 0, 0, 16, CONFIG_BZM_1002_STAGE7_LEAD_ZEROS,
-                        true, &work)) {
-        ESP_LOGE(TAG, "Stage 7 template trace could not build diagnostic work");
-        return;
-    }
-
-    char prev_hash[65];
-    char merkle_root[65];
-    char midstates[BZM_VERSION_VARIANTS][65];
-    lab_format_hex(template->prev_block_hash, 32, prev_hash,
-                   sizeof(prev_hash));
-    lab_format_hex(template->merkle_root, 32, merkle_root,
-                   sizeof(merkle_root));
-    for (size_t i = 0; i < work.midstate_count; ++i) {
-        lab_format_hex(work.midstates[i], 32, midstates[i],
-                       sizeof(midstates[i]));
-    }
-
-    ESP_LOGI(TAG,
-             "Stage 7 template: job=%s extranonce2=%s version=%08lx mask=%08lx ntime=%08lx nbits=%08lx "
-             "merkleResidue=%08lx",
-             template->share.job_id ? template->share.job_id : "",
-             template->share.extranonce2 ? template->share.extranonce2 : "",
-             (unsigned long) template->version,
-             (unsigned long) template->version_mask,
-             (unsigned long) template->ntime,
-             (unsigned long) template->target,
-             (unsigned long) work.merkle_residue);
-    ESP_LOGI(TAG, "Stage 7 template prev=%s merkle=%s", prev_hash,
-             merkle_root);
-    for (size_t i = 0; i < work.midstate_count; ++i) {
-        ESP_LOGI(TAG, "Stage 7 template midstate[%u] version=%08lx value=%s",
-                 (unsigned) i, (unsigned long) work.versions[i],
-                 midstates[i]);
-    }
-}
-#endif
 
 enum
 {
@@ -138,6 +89,35 @@ enum
 static bool staged_settle_parser(bzm_serial_transport_t * transport, const char * stage_name,
                                  const bzm_serial_parser_stats_t * initial_baseline,
                                  bzm_serial_parser_stats_t * accepted_baseline);
+
+static void reset_result_dedup(void)
+{
+    memset(RESULT_DEDUP, 0, sizeof(RESULT_DEDUP));
+    RESULT_DEDUP_NEXT = 0;
+}
+
+static bool result_is_duplicate(const asic_result_t *result)
+{
+    for (size_t index = 0; index < BZM_RESULT_DEDUP_CAPACITY; ++index) {
+        const bzm_result_identity_t *seen = &RESULT_DEDUP[index];
+        if (seen->valid && seen->work_handle == result->work_handle &&
+            seen->nonce == result->nonce &&
+            seen->final_ntime == result->final_ntime &&
+            seen->final_version == result->final_version) {
+            return true;
+        }
+    }
+    RESULT_DEDUP[RESULT_DEDUP_NEXT] = (bzm_result_identity_t){
+        .valid = true,
+        .work_handle = result->work_handle,
+        .nonce = result->nonce,
+        .final_ntime = result->final_ntime,
+        .final_version = result->final_version,
+    };
+    RESULT_DEDUP_NEXT = (RESULT_DEDUP_NEXT + 1) %
+        BZM_RESULT_DEDUP_CAPACITY;
+    return false;
+}
 
 static void staged_report(bzm_bringup_report_t * report, bzm_bringup_outcome_t outcome, bzm_bringup_reason_t reason)
 {
@@ -189,8 +169,10 @@ uint8_t BZM_init(GlobalState * state)
     atomic_store_explicit(&RUNNING_MAPPING_RECOVERY_PENDING, false, memory_order_seq_cst);
     atomic_store_explicit(&RUNNING_LOCALLY_VALID_RESULTS, 0, memory_order_relaxed);
     atomic_store_explicit(&RUNNING_LOCALLY_REJECTED_RESULTS, 0, memory_order_relaxed);
+    atomic_store_explicit(&RUNNING_DUPLICATE_RESULTS, 0, memory_order_relaxed);
     atomic_store_explicit(&RUNNING_LOCAL_REJECTION_STREAK, 0, memory_order_seq_cst);
     atomic_store_explicit(&RUNNING_LOCAL_RECOVERY_PENDING, false, memory_order_seq_cst);
+    reset_result_dedup();
 
     uint16_t engine_count = state->DEVICE_CONFIG.family.asic.core_count;
     if (engine_count != BZM_ENGINES_PER_ASIC) {
@@ -230,7 +212,7 @@ uint8_t BZM_init(GlobalState * state)
         /* BIRDS leaves each independent engine job enough ntime budget to
          * remain productive throughout the paced 236-engine rotation. */
         .timestamp_count = 60,
-        .lead_zeros = CONFIG_BZM_1002_STAGE7_LEAD_ZEROS,
+        .lead_zeros = CONFIG_BZM_1002_LEAD_ZEROS,
         .nonce_offset = BZM_NONCE_GAP_1002,
         .enhanced_mode = true,
     };
@@ -261,9 +243,6 @@ bool BZM_send_work(GlobalState * state, const mining_template_t * template)
             return false;
     }
 
-#ifdef CONFIG_BZM_1002_LAB_VALIDATION
-    lab_log_stage7_template(template);
-#endif
 
     pthread_mutex_lock(&REACTOR_LOCK);
     if (template->clean_jobs) {
@@ -273,6 +252,7 @@ bool BZM_send_work(GlobalState * state, const mining_template_t * template)
             ESP_LOGE(TAG, "Unable to flush engines for clean work");
             return false;
         }
+        reset_result_dedup();
     }
 
     bzm_work_t assigned_work;
@@ -313,6 +293,7 @@ bool BZM_clear_work(GlobalState * state)
     (void) state;
     pthread_mutex_lock(&REACTOR_LOCK);
     bool cleared = !INITIALIZED || bzm_reactor_clear_work(&REACTOR);
+    if (cleared) reset_result_dedup();
     pthread_mutex_unlock(&REACTOR_LOCK);
     if (!cleared) {
         atomic_fetch_add_explicit(&RUNNING_DISPATCH_FAILURES, 1,
@@ -335,20 +316,15 @@ asic_event_t * BZM_process_work(GlobalState * state)
     bool received = bzm_serial_read_result(&TRANSPORT, &raw, 20);
     bool nonce_frame = received && bzm_raw_result_has_valid_nonce(&raw);
     bool mapped = nonce_frame && bzm_reactor_map_result(&REACTOR, &raw, &event);
+    bool duplicate = mapped && result_is_duplicate(&event.data.share);
     pthread_mutex_unlock(&REACTOR_LOCK);
+    if (duplicate) {
+        atomic_fetch_add_explicit(&RUNNING_DUPLICATE_RESULTS, 1,
+                                  memory_order_relaxed);
+        return NULL;
+    }
     if (mapped) {
         atomic_fetch_add_explicit(&RUNNING_MAPPED_RESULTS, 1, memory_order_relaxed);
-#ifdef CONFIG_BZM_1002_LAB_VALIDATION
-        ESP_LOGI(TAG,
-                 "Stage 7 result map: asic=0x%02x engine=0x%03x status=0x%x rawNonce=0x%08lx rawSeq=%u rawTime=%u "
-                 "handle=0x%llx nonce=0x%08lx finalVersion=0x%08lx versionBits=0x%08lx finalNtime=0x%08lx "
-                 "logicalSeq=%u micro=%u",
-                 raw.asic_id, raw.engine_id, raw.status, (unsigned long) raw.nonce, raw.sequence_id, raw.time,
-                 (unsigned long long) event.data.share.work_handle, (unsigned long) event.data.share.nonce,
-                 (unsigned long) event.data.share.final_version, (unsigned long) event.data.share.version_bits,
-                 (unsigned long) event.data.share.final_ntime, event.data.share.sequence_id,
-                 event.data.share.micro_job_id);
-#endif
     } else if (nonce_frame) {
         /* An unchecksummed frame that looks like a nonce can contain a
          * corrupted ASIC/engine/sequence field. Recovery is proven only when
@@ -359,12 +335,6 @@ asic_event_t * BZM_process_work(GlobalState * state)
                                   memory_order_seq_cst);
         atomic_fetch_add_explicit(&RUNNING_MAPPING_REJECTION_STREAK, 1,
                                   memory_order_seq_cst);
-#ifdef CONFIG_BZM_1002_LAB_VALIDATION
-        ESP_LOGW(TAG,
-                 "Stage 7 result attribution rejected: asic=0x%02x engine=0x%03x status=0x%x rawNonce=0x%08lx rawSeq=%u rawTime=%u",
-                 raw.asic_id, raw.engine_id, raw.status,
-                 (unsigned long) raw.nonce, raw.sequence_id, raw.time);
-#endif
     }
     return mapped ? &event : NULL;
 }
@@ -390,12 +360,40 @@ bool BZM_running_stats_snapshot(bzm_running_stats_t * stats)
             atomic_load_explicit(&RUNNING_LOCALLY_VALID_RESULTS, memory_order_relaxed),
         .locally_rejected_results =
             atomic_load_explicit(&RUNNING_LOCALLY_REJECTED_RESULTS, memory_order_relaxed),
+        .duplicate_results =
+            atomic_load_explicit(&RUNNING_DUPLICATE_RESULTS, memory_order_relaxed),
         .local_rejection_streak = atomic_load_explicit(
             &RUNNING_LOCAL_REJECTION_STREAK, memory_order_seq_cst),
         .local_recovery_pending = atomic_load_explicit(
             &RUNNING_LOCAL_RECOVERY_PENDING, memory_order_seq_cst),
     };
     return true;
+}
+
+void BZM_driver_health_publish(const asic_driver_health_t *health)
+{
+    if (health == NULL) return;
+    pthread_mutex_lock(&REACTOR_LOCK);
+    uint64_t state_since_ms = DRIVER_HEALTH.state_since_ms;
+    if (!DRIVER_HEALTH.available ||
+        DRIVER_HEALTH.lifecycle != health->lifecycle) {
+        state_since_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    }
+    DRIVER_HEALTH = *health;
+    DRIVER_HEALTH.available = true;
+    DRIVER_HEALTH.state_since_ms = state_since_ms;
+    pthread_mutex_unlock(&REACTOR_LOCK);
+}
+
+bool BZM_driver_health_snapshot(GlobalState *state,
+                                asic_driver_health_t *health)
+{
+    (void)state;
+    if (health == NULL) return false;
+    pthread_mutex_lock(&REACTOR_LOCK);
+    *health = DRIVER_HEALTH;
+    pthread_mutex_unlock(&REACTOR_LOCK);
+    return health->available;
 }
 
 void BZM_running_record_proof(void)
@@ -420,6 +418,19 @@ void BZM_running_record_rejection(void)
                               memory_order_seq_cst);
     atomic_fetch_add_explicit(&RUNNING_LOCAL_REJECTION_STREAK, 1,
                               memory_order_seq_cst);
+}
+
+void BZM_record_local_result(GlobalState *state, bool valid,
+                             double nonce_difficulty)
+{
+    (void)state;
+    if (valid && bzm_running_result_meets_proof(
+                     nonce_difficulty,
+                     (double)CONFIG_BZM_1002_MIN_NONCE_DIFFICULTY)) {
+        BZM_running_record_proof();
+    } else {
+        BZM_running_record_rejection();
+    }
 }
 
 static bool read_u32(uint8_t asic_id, uint8_t offset, uint32_t * value)
@@ -609,7 +620,6 @@ static bool staged_mining_lease_service_due(void)
     return true;
 }
 
-#ifdef CONFIG_BZM_1002_STAGE6_BALANCED_RAMP
 static bool staged_operation_check(void)
 {
     if (!STAGED_LEASE_IO_OK || STAGED_OPERATION_AUTHORIZE == NULL ||
@@ -619,7 +629,6 @@ static bool staged_operation_check(void)
     }
     return true;
 }
-#endif
 
 static void staged_sleep(void * context, uint32_t delay_ms)
 {
@@ -709,7 +718,6 @@ static bool staged_ramp_telemetry_snapshot(void * context, bzm_telemetry_store_t
     return bzm_serial_get_telemetry_snapshot(transport, snapshot);
 }
 
-#ifdef CONFIG_BZM_1002_STAGE6_BALANCED_RAMP
 static bool staged_ramp_begin_engine(void * context, uint8_t asic_id, uint16_t engine_id)
 {
     (void) context;
@@ -759,7 +767,7 @@ static bool staged_ramp_wait_tdm_idle(bzm_serial_transport_t * transport)
     }
     bzm_serial_parser_stats_t stats = {0};
     (void) bzm_serial_get_parser_stats(transport, &stats);
-    ESP_LOGE(TAG, "Stage 6 could not reach TDM idle gap: frames=%lu discarded=%lu buffered=%u",
+    ESP_LOGE(TAG, "Engine startup could not reach a TDM idle gap: frames=%lu discarded=%lu buffered=%u",
              (unsigned long) stats.emitted_frames, (unsigned long) stats.discarded_bytes, (unsigned) stats.buffered_bytes);
     return false;
 }
@@ -808,24 +816,16 @@ static bool staged_ramp_capture_batch_telemetry(bzm_serial_transport_t * transpo
 
         const bzm_telemetry_sample_t * culprit_sample = bzm_telemetry_store_get(&snapshot, culprit);
 
-        ESP_LOGW(TAG,
-                 "Stage 6 pre-activation telemetry retry: attempt=%u/%u asic=0x%02x consecutive=%u/%u received=%u valid=%u "
-                 "thermal(en=%u validity=%u fault=%u trip=%u) voltage(en=%u fault=%u trip=%u) pll=%u "
-                 "ch0=%.2f ch1=%.2f ch2=%.2f hard=%u",
-                 attempt + 1U, attempts, culprit, observed, STAGED_RAMP_TELEMETRY_POLICY.ch2_confirm_samples,
-                 culprit_sample != NULL && culprit_sample->received,
-                 culprit_sample != NULL && culprit_sample->valid, culprit_sample != NULL && culprit_sample->thermal_enabled,
-                 culprit_sample != NULL && culprit_sample->thermal_validity,
-                 culprit_sample != NULL && culprit_sample->thermal_fault,
-                 culprit_sample != NULL && culprit_sample->thermal_trip,
-                 culprit_sample != NULL && culprit_sample->voltage_enabled,
-                 culprit_sample != NULL && culprit_sample->voltage_fault,
-                 culprit_sample != NULL && culprit_sample->voltage_trip, culprit_sample != NULL && culprit_sample->pll_locked,
-                 culprit_sample != NULL ? culprit_sample->ch0_mv : 0.0f,
-                 culprit_sample != NULL ? culprit_sample->ch1_mv : 0.0f,
-                 culprit_sample != NULL ? culprit_sample->ch2_mv : 0.0f, hard_fault);
         if (hard_fault || confirmation_result == BZM_CH2_CONFIRMATION_CONTINUOUS ||
             confirmation_result == BZM_CH2_CONFIRMATION_INVALID) {
+            ESP_LOGE(TAG,
+                     "Engine startup telemetry unsafe: asic=0x%02x samples=%u/%u temp=%.1fC ch0=%.1fmV ch1=%.1fmV ch2=%.1fmV",
+                     culprit, observed,
+                     STAGED_RAMP_TELEMETRY_POLICY.ch2_confirm_samples,
+                     culprit_sample != NULL ? culprit_sample->temperature_c : 0.0f,
+                     culprit_sample != NULL ? culprit_sample->ch0_mv : 0.0f,
+                     culprit_sample != NULL ? culprit_sample->ch1_mv : 0.0f,
+                     culprit_sample != NULL ? culprit_sample->ch2_mv : 0.0f);
             return false;
         }
     }
@@ -867,7 +867,7 @@ static bool staged_ramp_set_tdm(void * context, bool enabled)
             }
             if (!read_ok || actual != control) {
                 ESP_LOGE(TAG,
-                         "Stage 6 TDM pause readback failed: asic=0x%02x expected=0x%08lx actual=0x%08lx read_ok=%u",
+                         "Engine startup TDM pause readback failed: asic=0x%02x expected=0x%08lx actual=0x%08lx read_ok=%u",
                          asic_id, (unsigned long) control, (unsigned long) actual, read_ok);
                 return false;
             }
@@ -896,7 +896,7 @@ static bool staged_balanced_batch_end(void * context, uint16_t pair_index)
     if (!STAGED_ENGINE_WINDOW_ACTIVE || !bzm_serial_get_parser_stats(context, &current) ||
         !bzm_balanced_ramp_parser_window_is_clean(&STAGED_ENGINE_WINDOW_BASELINE, &current)) {
         ESP_LOGE(TAG,
-                 "Stage 6 engine parser window failed: discarded=%lu/%lu unexpected=%lu/%lu dropped=%lu/%lu "
+                 "Engine startup parser window failed: discarded=%lu/%lu unexpected=%lu/%lu dropped=%lu/%lu "
                  "rejected=%lu/%lu unmatched=%lu/%lu telemetry_decode=%lu/%lu queued=%u buffered=%u",
                  (unsigned long) current.discarded_bytes,
                  (unsigned long) STAGED_ENGINE_WINDOW_BASELINE.discarded_bytes,
@@ -931,14 +931,8 @@ static bool staged_ramp_read_register(void * context, uint8_t asic_id, uint16_t 
     if (!staged_operation_check()) {
         return false;
     }
-    int64_t started_us = esp_timer_get_time();
-    bool result = bzm_serial_read_register(context, asic_id, engine_id, offset, data, data_len);
-    int64_t elapsed_us = esp_timer_get_time() - started_us;
-    if (elapsed_us > 20000) {
-        ESP_LOGW(TAG, "Stage 6 slow register read: asic=0x%02x engine=0x%03x reg=0x%02x elapsed=%lld us result=%d",
-                 asic_id, engine_id, offset, elapsed_us, result);
-    }
-    return result;
+    return bzm_serial_read_register(context, asic_id, engine_id, offset,
+                                    data, data_len);
 }
 
 static void staged_ramp_delay_ms(void * context, uint32_t delay_ms)
@@ -990,16 +984,10 @@ static const bzm_balanced_ramp_ops_t STAGED_BALANCED_RAMP_OPS = {
 
 static bool staged_balanced_pair_commit(void * context, uint8_t asic_id, const bzm_engine_pair_t * pair)
 {
-    int64_t started_us = esp_timer_get_time();
     bool committed = bzm_balanced_ramp_commit_pair(&STAGED_BALANCED_RAMP, &STAGED_BALANCED_RAMP_OPS, context, asic_id, pair);
-    int64_t elapsed_us = esp_timer_get_time() - started_us;
-    if (pair != NULL && pair->pair_index < 2) {
-        ESP_LOGI(TAG, "Stage 6 pair timing: pair=%u asic=0x%02x elapsed=%lld us committed=%d",
-                 pair->pair_index, asic_id, elapsed_us, committed);
-    }
     if (!committed) {
         ESP_LOGE(TAG,
-                 "Stage 6 pair failed: cause=%s asic=0x%02x engine=0x%03x reg=0x%02x expected=%lu actual=%lu "
+                 "Engine pair activation failed: cause=%s asic=0x%02x engine=0x%03x reg=0x%02x expected=%lu actual=%lu "
                  "pairs=%u engines=%u",
                  bzm_balanced_ramp_failure_name(STAGED_BALANCED_RAMP.failure), STAGED_BALANCED_RAMP.failure_asic_id,
                  STAGED_BALANCED_RAMP.failure_engine_id, STAGED_BALANCED_RAMP.failure_register_offset,
@@ -1022,7 +1010,7 @@ static bool staged_activation_barrier(void * context, size_t asic_count, size_t 
         (void) bzm_serial_get_parser_stats(context, &current);
         const bzm_serial_parser_stats_t * baseline = &STAGED_BALANCED_RAMP.parser_baseline;
         ESP_LOGE(TAG,
-                 "Stage 6 barrier failed: cause=%s expected=%lu actual=%lu "
+                 "Engine activation barrier failed: cause=%s expected=%lu actual=%lu "
                  "discarded=%lu/%lu unexpected_register=%lu/%lu dropped=%lu/%lu rejected=%lu/%lu "
                  "unmatched=%lu/%lu telemetry_decode=%lu/%lu queued=%u buffered=%u",
                  bzm_balanced_ramp_failure_name(STAGED_BALANCED_RAMP.failure),
@@ -1038,41 +1026,6 @@ static bool staged_activation_barrier(void * context, size_t asic_count, size_t 
     }
     return passed;
 }
-#endif
-
-static void staged_log_telemetry_diagnostics(void)
-{
-    bzm_telemetry_store_t snapshot;
-    if (bzm_serial_get_telemetry_snapshot(&TRANSPORT, &snapshot)) {
-        uint64_t now_us = (uint64_t) esp_timer_get_time();
-        for (uint8_t index = 0; index < BZM_BRINGUP_ASIC_COUNT; ++index) {
-            uint8_t asic_id = bzm_asic_wire_ids[index];
-            const bzm_telemetry_sample_t * sample = bzm_telemetry_store_get(&snapshot, asic_id);
-            if (sample == NULL || !sample->received) {
-                ESP_LOGW(TAG, "stage telemetry ASIC 0x%02x missing", asic_id);
-                continue;
-            }
-            uint64_t age_us = now_us >= sample->timestamp_us ? now_us - sample->timestamp_us : UINT64_MAX;
-            ESP_LOGI(TAG,
-                     "stage telemetry ASIC 0x%02x age=%llu us temp=%.2f C/code=0x%03x "
-                     "ch0=%.2f mV/0x%04x ch1=%.2f mV/0x%04x ch2=%.2f mV/0x%04x "
-                     "thermal(en=%u valid=%u fault=%u trip=%u) voltage(en=%u fault=%u trip=%u) "
-                     "pll_pair_lock=%u",
-                     asic_id, (unsigned long long) age_us, sample->temperature_c, sample->temperature_code, sample->ch0_mv,
-                     sample->ch0_code, sample->ch1_mv, sample->ch1_code, sample->ch2_mv, sample->ch2_code, sample->thermal_enabled,
-                     sample->thermal_validity, sample->thermal_fault, sample->thermal_trip, sample->voltage_enabled,
-                     sample->voltage_fault, sample->voltage_trip, sample->pll_locked);
-        }
-    }
-
-    bzm_serial_parser_stats_t stats;
-    if (bzm_serial_get_parser_stats(&TRANSPORT, &stats)) {
-        ESP_LOGI(TAG, "stage parser frames=%lu discarded=%lu unexpected_register=%lu telemetry_decode_failures=%lu buffered=%u",
-                 (unsigned long) stats.emitted_frames, (unsigned long) stats.discarded_bytes,
-                 (unsigned long) stats.unexpected_register_headers, (unsigned long) stats.telemetry_decode_failures,
-                 (unsigned) stats.buffered_bytes);
-    }
-}
 
 static const bzm_bringup_ops_t STAGED_OPS = {
     .probe_noop = staged_probe_noop,
@@ -1082,17 +1035,10 @@ static const bzm_bringup_ops_t STAGED_OPS = {
     .now_us = staged_now_us,
     .telemetry_snapshot = staged_telemetry_snapshot,
 
-#ifdef CONFIG_BZM_1002_STAGE6_BALANCED_RAMP
     .balanced_batch_begin = staged_balanced_batch_begin,
     .balanced_pair_commit = staged_balanced_pair_commit,
     .balanced_batch_end = staged_balanced_batch_end,
     .activation_barrier = staged_activation_barrier,
-#else
-    .balanced_batch_begin = NULL,
-    .balanced_pair_commit = NULL,
-    .balanced_batch_end = NULL,
-    .activation_barrier = NULL,
-#endif
 };
 
 static const bzm_bringup_ops_t STAGED_RAMP_OPS = {
@@ -1102,17 +1048,10 @@ static const bzm_bringup_ops_t STAGED_RAMP_OPS = {
     .delay_ms = staged_delay_ms,
     .now_us = staged_now_us,
     .telemetry_snapshot = staged_ramp_telemetry_snapshot,
-#ifdef CONFIG_BZM_1002_STAGE6_BALANCED_RAMP
     .balanced_batch_begin = staged_balanced_batch_begin,
     .balanced_pair_commit = staged_balanced_pair_commit,
     .balanced_batch_end = staged_balanced_batch_end,
     .activation_barrier = staged_activation_barrier,
-#else
-    .balanced_batch_begin = NULL,
-    .balanced_pair_commit = NULL,
-    .balanced_batch_end = NULL,
-    .activation_barrier = NULL,
-#endif
 };
 
 static bool staged_mining_write_work(void * context, const bzm_work_t * work)
@@ -1143,8 +1082,8 @@ static bool staged_mining_dispatch_checkpoint(void * context)
      * Give that receive path a bounded idle interval, then drain the ESP RX
      * ring before programming the next logical engine. Parser integrity is
      * still enforced without tolerance by the runtime baseline. */
-#if CONFIG_BZM_1002_STAGE7_DISPATCH_GAP_US > 0
-    esp_rom_delay_us(CONFIG_BZM_1002_STAGE7_DISPATCH_GAP_US);
+#if CONFIG_BZM_1002_DISPATCH_GAP_US > 0
+    esp_rom_delay_us(CONFIG_BZM_1002_DISPATCH_GAP_US);
 #endif
     (void) bzm_serial_poll(transport, 1);
     return bzm_dispatch_gate_is_authorized(&STAGED_DISPATCH_GATE);
@@ -1280,7 +1219,7 @@ bzm_bringup_outcome_t BZM_staged_sensors(const bzm_bringup_sensor_profile_t * pr
     if (!baseline_ready) {
         staged_report(report, BZM_BRINGUP_BAD, BZM_BRINGUP_REASON_ACTIVATION_BARRIER);
     } else if (outcome == BZM_BRINGUP_GOOD &&
-               !staged_settle_parser(&TRANSPORT, "Stage 4", &pre_sensor_baseline,
+               !staged_settle_parser(&TRANSPORT, "telemetry startup", &pre_sensor_baseline,
                                      &STAGED_SENSOR_PARSER_BASELINE)) {
         STAGED_BRINGUP.sensors_verified = false;
         staged_report(report, BZM_BRINGUP_BAD, BZM_BRINGUP_REASON_ACTIVATION_BARRIER);
@@ -1288,7 +1227,6 @@ bzm_bringup_outcome_t BZM_staged_sensors(const bzm_bringup_sensor_profile_t * pr
     } else if (outcome == BZM_BRINGUP_GOOD) {
         STAGED_SENSOR_PARSER_BASELINE_VALID = true;
     }
-    staged_log_telemetry_diagnostics();
     if (outcome != BZM_BRINGUP_GOOD)
         (void) staged_fail_closed_locked();
     pthread_mutex_unlock(&REACTOR_LOCK);
@@ -1441,8 +1379,10 @@ bzm_bringup_outcome_t BZM_staged_running(GlobalState * state, const bzm_bringup_
     if (outcome == BZM_BRINGUP_GOOD) {
         bzm_reactor_config_t config = {
             .engine_count = BZM_ENGINES_PER_ASIC,
-            .timestamp_count = 16,
-            .lead_zeros = CONFIG_BZM_1002_STAGE7_LEAD_ZEROS,
+            /* Match the BIRDS production work budget after the verified
+             * bring-up path rebuilds the reactor for mining. */
+            .timestamp_count = 60,
+            .lead_zeros = CONFIG_BZM_1002_LEAD_ZEROS,
             .nonce_offset = BZM_NONCE_GAP_1002,
             .enhanced_mode = true,
         };
@@ -1458,7 +1398,7 @@ bzm_bringup_outcome_t BZM_staged_running(GlobalState * state, const bzm_bringup_
                                   pre_running_baseline.queued_results == 0 &&
                                   pre_running_baseline.buffered_bytes == 0;
             if (!baseline_ready ||
-                !staged_settle_parser(&TRANSPORT, "Stage 7", &pre_running_baseline,
+                !staged_settle_parser(&TRANSPORT, "mining startup", &pre_running_baseline,
                                       &STAGED_RUNNING_PARSER_BASELINE)) {
                 STAGED_BRINGUP.running_verified = false;
                 staged_report(report, BZM_BRINGUP_BAD, BZM_BRINGUP_REASON_ACTIVATION_BARRIER);

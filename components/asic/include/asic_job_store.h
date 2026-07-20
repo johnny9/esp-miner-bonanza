@@ -42,6 +42,9 @@ bool asic_job_store_store_generated(asic_job_store_t *store,
 bool asic_job_store_snapshot(asic_job_store_t *store,
                              asic_work_handle_t handle,
                              mining_template_t *snapshot);
+// Read-only identity check used by drivers before emitting a delayed result.
+bool asic_job_store_contains(asic_job_store_t *store,
+                             asic_work_handle_t handle);
 bool asic_job_store_release(asic_job_store_t *store,
                             asic_work_handle_t handle);
 void asic_job_store_invalidate_all(asic_job_store_t *store);

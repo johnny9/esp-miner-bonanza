@@ -12,7 +12,7 @@
 #include "asic_reset.h"
 #include "asic_result_task.h"
 #include "bap/bap.h"
-#include "bzm_validation_runtime.h"
+#include "bzm_controller.h"
 #include "connect.h"
 #include "create_jobs_task.h"
 #include "device_config.h"
@@ -139,7 +139,7 @@ void app_main(void)
              * Board 1002 uses its fixed-profile production controller instead
              * of the legacy tunable voltage path.
              */
-            esp_err_t runtime_err = bzm_validation_runtime_init(&GLOBAL_STATE);
+            esp_err_t runtime_err = bzm_controller_init(&GLOBAL_STATE);
             if (runtime_err != ESP_OK) {
                 ESP_LOGE(TAG, "Bonanza safe-off runtime initialization failed: %s", esp_err_to_name(runtime_err));
                 system_init_ret = runtime_err;
@@ -186,7 +186,7 @@ void app_main(void)
     queue_init(&GLOBAL_STATE.stratum_queue);
 
     if (GLOBAL_STATE.DEVICE_CONFIG.bonanza_bridge) {
-        if (!bzm_validation_runtime_mining_stack_ready()) {
+        if (!bzm_controller_mining_stack_ready()) {
             ESP_LOGE(TAG, "Bonanza remained safe-off after automatic startup failure");
         }
         return;

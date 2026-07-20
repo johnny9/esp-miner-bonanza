@@ -26,6 +26,88 @@
         </div>
     </div>
 
+    <div *ngIf="info.asicHealth as health" class="card mb-3" data-testid="asic-health">
+        <div class="flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <div>
+                <span class="text-lg font-medium">Miner health</span>
+                <span class="ml-2 font-semibold"
+                    [class.text-green-500]="health.lifecycle === 'MINING'"
+                    [class.text-red-500]="health.lifecycle === 'FAULT'"
+                    [class.text-yellow-500]="health.lifecycle === 'STARTING' || health.lifecycle === 'MAINTENANCE'">
+                    {{health.lifecycle}}
+                </span>
+            </div>
+            <span class="text-color-secondary">
+                {{health.stateAgeSeconds | number: '1.0-0'}} s in state
+            </span>
+        </div>
+
+        <div class="grid text-sm">
+            <div class="col-12 md:col-6 lg:col-3">
+                <div class="text-color-secondary mb-1">Configured pool</div>
+                <div class="font-medium">{{activePoolURL}}:{{activePoolPort}}</div>
+                <div>{{info.poolConnectionInfo || 'Reconnecting'}}</div>
+                <div [class.text-yellow-500]="info.currentWorkAgeSeconds < 0 || info.currentWorkAgeSeconds > 60">
+                    Work age:
+                    <ng-container *ngIf="info.currentWorkAgeSeconds >= 0; else waitingForWork">
+                        {{info.currentWorkAgeSeconds | number: '1.1-1'}} s
+                    </ng-container>
+                    <ng-template #waitingForWork>waiting for pool work</ng-template>
+                </div>
+                <div>{{activePoolProtocol}}; shares {{info.sharesAccepted}} accepted / {{info.sharesRejected}} rejected</div>
+            </div>
+
+            <div class="col-12 md:col-6 lg:col-3">
+                <div class="text-color-secondary mb-1">Useful hashrate</div>
+                <div class="font-medium">{{info.hashRate | hashSuffix}}</div>
+                <div>1 minute: {{info.hashRate_1m | hashSuffix}}</div>
+                <div *ngIf="health.lifecycle === 'MINING' && health.stateAgeSeconds < 120" class="text-yellow-500">
+                    Warming up averages
+                </div>
+            </div>
+
+            <div class="col-12 md:col-6 lg:col-3">
+                <div class="text-color-secondary mb-1">ASIC topology</div>
+                <div class="font-medium">{{health.asicCount}} / {{health.expectedAsicCount}} ASICs</div>
+                <div>{{health.activeEngineCount}} / {{health.expectedEngineCount}} engines</div>
+                <div>{{health.fixedFrequencyMHz}} MHz at {{health.fixedVoltageMV}} mV fixed</div>
+                <div>{{health.measuredVoltageV | number: '1.3-3'}} V measured</div>
+            </div>
+
+            <div class="col-12 md:col-6 lg:col-3">
+                <div class="text-color-secondary mb-1">Bridge and cooling</div>
+                <div class="font-medium">
+                    {{health.bridgeVersion || 'Unavailable'}}
+                    (protocol {{health.bridgeProtocolMajor}}.{{health.bridgeProtocolMinor}})
+                </div>
+                <div>ESP firmware {{info.version}}</div>
+                <div [class.text-red-500]="!health.bridgeCompatible">
+                    {{health.bridgeCompatible ? 'Compatible' : 'Incompatible'}}
+                </div>
+                <div>{{health.boardTemperatureC | number: '1.1-1'}} °C; fan {{health.fanPercent}}% / {{health.fanRPM}} RPM</div>
+            </div>
+        </div>
+
+        <div *ngIf="health.lastFault" class="mt-3 p-3 border-1 border-red-500 border-round text-red-500">
+            Fault {{health.lastFaultCode}}: {{health.lastFault}}
+            <div *ngIf="health.recommendedAction" class="mt-1">{{health.recommendedAction}}</div>
+        </div>
+
+        <details class="mt-3">
+            <summary class="cursor-pointer text-color-secondary">Transport diagnostics</summary>
+            <div class="grid mt-2 text-sm">
+                <div class="col-6 md:col-2">Mapped results: {{health.mappedResults}}</div>
+                <div class="col-6 md:col-2">Locally valid: {{health.locallyValidResults}}</div>
+                <div class="col-6 md:col-2">Discarded bytes: {{health.parserDiscardedBytes}}</div>
+                <div class="col-6 md:col-2">Recoveries: {{health.parserRecoveries}}</div>
+                <div class="col-6 md:col-2">Mapping rejects: {{health.mappingRejections}}</div>
+                <div class="col-6 md:col-2">Local rejects: {{health.localRejections}}</div>
+                <div class="col-6 md:col-2">Duplicates: {{health.duplicateResults}}</div>
+                <div class="col-6 md:col-2">Dispatch failures: {{health.dispatchFailures}}</div>
+            </div>
+        </details>
+    </div>
+
     <div class="grid-stack" [class.gs-edit-mode]="editMode" #gridStack>
         <!-- Hashrate -->
         <div class="grid-stack-item" gs-id="hashrate">

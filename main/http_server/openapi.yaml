@@ -24,576 +24,6 @@ components:
       properties:
         message:
           type: string
-    BridgeInfo:
-      type: object
-      required:
-        - available
-        - versionQuerySupported
-        - version
-        - protocolMajor
-        - protocolMinor
-      properties:
-        available:
-          type: boolean
-          description: Whether the RP2040 bridge responded to the control UART
-        versionQuerySupported:
-          type: boolean
-          description: Whether the installed bridge implements the version query command
-        version:
-          anyOf:
-            - type: string
-            - type: 'null'
-          description: Installed bridge version, or null for older/unavailable firmware
-        protocolMajor:
-          anyOf:
-            - type: integer
-            - type: 'null'
-          description: Bridge control protocol major version
-        protocolMinor:
-          anyOf:
-            - type: integer
-            - type: 'null'
-          description: Bridge control protocol minor version
-    BridgeUpdateStatus:
-      type: object
-      required:
-        - state
-        - progress
-        - imageSize
-        - running
-        - versionQuerySupported
-        - currentVersion
-        - error
-      properties:
-        state:
-          type: string
-          enum:
-            - idle
-            - preparing
-            - erasing
-            - programming
-            - verifying
-            - resetting
-            - querying
-            - complete
-            - failed
-        progress:
-          type: integer
-          minimum: 0
-          maximum: 100
-          description: Progress within the current update state
-        imageSize:
-          type: integer
-          minimum: 0
-          maximum: 2097152
-        running:
-          type: boolean
-        versionQuerySupported:
-          type: boolean
-        currentVersion:
-          anyOf:
-            - type: string
-            - type: 'null'
-          description: Version reported after reset, when supported
-        error:
-          anyOf:
-            - type: string
-            - type: 'null'
-          description: ESP-IDF error name when the update failed
-    BzmValidationRequest:
-      type: object
-      additionalProperties: false
-      required: [targetStage, hold, leaseSeconds, confirm]
-      properties:
-        targetStage:
-          type: integer
-          minimum: 0
-          maximum: 7
-          description: Highest validation stage to execute.
-        hold:
-          type: boolean
-          description: Keep a successful powered stage active under its lease.
-        leaseSeconds:
-          type: integer
-          minimum: 0
-          maximum: 300
-          description: Must not exceed configuration.maximumLeaseSeconds.
-        confirm:
-          type: string
-          maxLength: 32
-          description: Powered stages require the exact compiled power confirmation.
-      example:
-        targetStage: 2
-        hold: true
-        leaseSeconds: 15
-        confirm: ENERGIZE_BZM_1002
-    BzmValidationHeartbeatRequest:
-      type: object
-      additionalProperties: false
-      required: [leaseSeconds]
-      properties:
-        leaseSeconds:
-          type: integer
-          minimum: 1
-          maximum: 300
-          description: Replacement lease duration, bounded by the compiled maximum.
-      example:
-        leaseSeconds: 15
-    BzmValidationStopRequest:
-      type: object
-      additionalProperties: false
-      properties:
-        reason:
-          type: string
-          maxLength: 96
-      example:
-        reason: operator completed stage validation
-    BzmStageResult:
-      type: object
-      required: [status, statusName, code, codeName, detail]
-      properties:
-        status:
-          type: integer
-          minimum: 0
-          maximum: 5
-        statusName:
-          type: string
-          enum: [NOT_RUN, RUNNING, GOOD, BAD, BLOCKED, SKIPPED]
-        code:
-          type: integer
-          minimum: 0
-        codeName:
-          type: string
-        detail:
-          type: string
-          maxLength: 159
-    BzmStageExecution:
-      allOf:
-        - $ref: '#/components/schemas/BzmStageResult'
-        - type: object
-          required: [stage, stageName]
-          properties:
-            stage:
-              type: integer
-              minimum: 0
-              maximum: 7
-            stageName:
-              type: string
-    BzmStageDefinition:
-      type: object
-      required:
-        - stage
-        - name
-        - configuration
-        - expectedGood
-        - expectedBad
-        - energizesAsicRail
-        - requiresLocalArm
-      properties:
-        stage:
-          type: integer
-          minimum: 0
-          maximum: 7
-        name:
-          type: string
-        configuration:
-          type: string
-        expectedGood:
-          type: string
-        expectedBad:
-          type: string
-        energizesAsicRail:
-          type: boolean
-        requiresLocalArm:
-          type: boolean
-    BzmSupervisorConfiguration:
-      type: object
-      required:
-        - buildMaxStage
-        - buildMaxStageName
-        - implementedMaxStage
-        - implementedMaxStageName
-        - poweredStagesCompiled
-        - productionMode
-        - independentKillAvailable
-        - allowEspOnlyKillInLab
-        - boardManagedSafety
-        - maximumLeaseMs
-        - maximumLeaseSeconds
-        - firstPoweredStage
-        - stage7MiningEnabled
-        - stage7ProofTimeoutMs
-        - stage7MinimumValidResults
-        - stage7MappingRecoveryEnabled
-        - stage7MaximumMappingRejections
-        - stage7MaximumLocalRejections
-        - stage7MinimumNonceDifficulty
-        - stage7LeadZeros
-        - stage7DispatchGapUs
-        - stage7ParserRealignEnabled
-        - stage7ParserRealignMaxDiscards
-        - stage7ParserRealignCleanWindows
-        - stage7ParserRealignMaxWindows
-        - stage7ParserRealignMaxEvents
-        - sensorTdmGapCount
-        - pllLockConfirmSamples
-        - powerConfirmation
-        - armMethod
-        - bootButtonRequired
-        - localArmWindowMs
-      properties:
-        buildMaxStage: {type: integer, minimum: 0, maximum: 7}
-        buildMaxStageName: {type: string}
-        implementedMaxStage: {type: integer, minimum: 0, maximum: 7}
-        implementedMaxStageName: {type: string}
-        poweredStagesCompiled: {type: boolean}
-        productionMode: {type: boolean}
-        independentKillAvailable: {type: boolean}
-        allowEspOnlyKillInLab: {type: boolean}
-        boardManagedSafety: {type: boolean}
-        maximumLeaseMs: {type: integer, minimum: 1000, maximum: 300000}
-        maximumLeaseSeconds: {type: integer, minimum: 1, maximum: 300}
-        firstPoweredStage: {type: integer, const: 2}
-        stage7MiningEnabled: {type: boolean}
-        stage7ProofTimeoutMs: {type: integer, minimum: 1000, maximum: 300000}
-        stage7MinimumValidResults: {type: integer, minimum: 1, maximum: 100}
-        stage7MappingRecoveryEnabled: {type: boolean}
-        stage7MaximumMappingRejections: {type: integer, minimum: 1, maximum: 100}
-        stage7MaximumLocalRejections: {type: integer, minimum: 0, maximum: 100}
-        stage7MinimumNonceDifficulty: {type: integer, minimum: 1, maximum: 1024}
-        stage7LeadZeros: {type: integer, minimum: 32, maximum: 64}
-        stage7DispatchGapUs: {type: integer, minimum: 0, maximum: 2000}
-        stage7ParserRealignEnabled: {type: boolean}
-        stage7ParserRealignMaxDiscards: {type: integer, minimum: 1, maximum: 256}
-        stage7ParserRealignCleanWindows: {type: integer, minimum: 1, maximum: 10}
-        stage7ParserRealignMaxWindows: {type: integer, minimum: 2, maximum: 20}
-        stage7ParserRealignMaxEvents: {type: integer, minimum: 1, maximum: 20}
-        sensorTdmGapCount: {type: integer, minimum: 0, maximum: 63}
-        pllLockConfirmSamples: {type: integer, minimum: 1, maximum: 10}
-        powerConfirmation: {type: string, const: ENERGIZE_BZM_1002}
-        armMethod:
-          type: string
-          enum: [USB_SERIAL_JTAG, BOOT_BUTTON]
-        bootButtonRequired: {type: boolean}
-        localArmWindowMs: {type: integer, minimum: 0, maximum: 60000}
-    BzmLocalArm:
-      type: object
-      required: [enabled, method, active, remainingMs, windowMs, singleUse, command]
-      properties:
-        enabled:
-          type: boolean
-          description: Whether this lab image accepts a local USB serial arm command.
-        method:
-          type: string
-          enum: [USB_SERIAL_JTAG, BOOT_BUTTON]
-        active:
-          type: boolean
-          description: Whether a non-expired one-shot local arm is waiting.
-        remainingMs: {type: integer, minimum: 0, maximum: 60000}
-        windowMs: {type: integer, minimum: 0, maximum: 60000}
-        singleUse: {type: boolean}
-        command:
-          type: string
-          description: Exact local serial command when enabled; never accepted by HTTP.
-    BzmValidationReport:
-      type: object
-      required:
-        - schemaVersion
-        - runId
-        - requestedStage
-        - requestedStageName
-        - buildMaxStage
-        - buildMaxStageName
-        - implementedMaxStage
-        - implementedMaxStageName
-        - reachedStage
-        - reachedStageName
-        - overall
-        - overallName
-        - state
-        - stateName
-        - energized
-        - leaseMs
-        - stages
-        - finalSafeOff
-      properties:
-        schemaVersion: {type: integer, minimum: 0}
-        runId: {type: integer, minimum: 0}
-        requestedStage: {type: integer, minimum: 0, maximum: 7}
-        requestedStageName: {type: string}
-        buildMaxStage: {type: integer, minimum: 0, maximum: 7}
-        buildMaxStageName: {type: string}
-        implementedMaxStage: {type: integer, minimum: 0, maximum: 7}
-        implementedMaxStageName: {type: string}
-        reachedStage: {type: integer, minimum: 0, maximum: 7}
-        reachedStageName: {type: string}
-        overall: {type: integer, minimum: 0, maximum: 5}
-        overallName: {type: string}
-        state: {type: integer, minimum: 0, maximum: 5}
-        stateName:
-          type: string
-          enum: [IDLE, EXECUTING, OFF_SAFE, HOLDING, FAULT_LATCHED, SHUTDOWN_UNVERIFIED]
-        energized: {type: boolean}
-        leaseMs: {type: integer, minimum: 0, maximum: 300000}
-        stages:
-          type: array
-          minItems: 8
-          maxItems: 8
-          items:
-            $ref: '#/components/schemas/BzmStageExecution'
-        finalSafeOff:
-          $ref: '#/components/schemas/BzmStageResult'
-    BzmBridgeValidationSnapshot:
-      type: object
-      required: [fanRpm, info, safetyStatus]
-      properties:
-        fanRpm: {type: integer, minimum: 0, maximum: 65535}
-        info:
-          type: object
-          required: [valid, schemaVersion, protocolMajor, protocolMinor, version]
-          properties:
-            valid: {type: boolean}
-            schemaVersion: {type: integer, minimum: 0, maximum: 255}
-            protocolMajor: {type: integer, minimum: 0, maximum: 255}
-            protocolMinor: {type: integer, minimum: 0, maximum: 255}
-            version: {type: string, maxLength: 63}
-        safetyStatus:
-          type: object
-          required:
-            - valid
-            - snapshotValid
-            - payloadValid
-            - schemaVersion
-            - stage
-            - stageName
-            - state
-            - stateName
-            - fault
-            - faultName
-            - runtimeVerdict
-            - runtimeVerdictName
-            - productionVerdict
-            - productionVerdictName
-            - capabilities
-            - evidence
-            - leaseRemainingMs
-            - fiveVoltEnabled
-            - asicResetAsserted
-            - fanFull
-            - fanPercent
-            - tripInputAsserted
-          properties:
-            valid: {type: boolean}
-            snapshotValid: {type: boolean}
-            payloadValid: {type: boolean}
-            schemaVersion: {type: integer, minimum: 0, maximum: 255}
-            stage: {type: integer, minimum: 0, maximum: 2}
-            stageName: {type: string}
-            state: {type: integer, minimum: 0, maximum: 2}
-            stateName: {type: string}
-            fault: {type: integer, minimum: 0, maximum: 255}
-            faultName: {type: string}
-            runtimeVerdict: {type: integer, minimum: 0, maximum: 255}
-            runtimeVerdictName: {type: string}
-            productionVerdict: {type: integer, minimum: 0, maximum: 255}
-            productionVerdictName: {type: string}
-            capabilities: {type: integer, minimum: 0, maximum: 65535}
-            evidence: {type: integer, minimum: 0, maximum: 65535}
-            leaseRemainingMs: {type: integer, minimum: 0}
-            fiveVoltEnabled: {type: boolean}
-            asicResetAsserted: {type: boolean}
-            fanFull: {type: boolean}
-            fanPercent: {type: integer, minimum: 0, maximum: 100}
-            tripInputAsserted: {type: boolean}
-    BzmValidationOperation:
-      type: object
-      required: [type, accepted]
-      properties:
-        type:
-          type: string
-          enum: [validation, heartbeat, stop, faultClear]
-        accepted: {type: boolean}
-        gateResult: {type: integer, minimum: 0, maximum: 9}
-        gateResultName: {type: string}
-        targetStage: {type: integer, minimum: 0, maximum: 7}
-        hold: {type: boolean}
-        leaseSeconds: {type: integer, minimum: 0, maximum: 300}
-    BzmRuntimeHealth:
-      type: object
-      required: [valid, status, statusName, fault, faultName, detail, sampledAtMs]
-      properties:
-        valid:
-          type: boolean
-          description: Whether at least one runtime-health evaluation has completed.
-        status:
-          type: integer
-          minimum: 0
-          maximum: 1
-          description: Numeric runtime-health result; 0 is GOOD and 1 is BAD.
-        statusName:
-          type: string
-          enum: [GOOD, BAD, INVALID_STATUS]
-        fault:
-          type: integer
-          minimum: 0
-          maximum: 65535
-          description: Stable BZM runtime-health fault code.
-        faultName:
-          type: string
-          description: Stable symbolic name for the runtime-health fault code.
-        detail:
-          type: string
-          maxLength: 159
-        sampledAtMs:
-          type: integer
-          minimum: 0
-          description: Monotonic milliseconds when this health result was evaluated; zero means no evaluation has completed.
-    BzmRunningEvidence:
-      type: object
-      required:
-        - requested
-        - monitoring
-        - complete
-        - startedAtMs
-        - elapsedMs
-        - status
-        - statusName
-        - fault
-        - faultName
-        - detail
-        - requiredChipEngineWrites
-        - minimumValidResults
-        - mappingRecoveryEnabled
-        - maximumMappingRejections
-        - maximumLocalRejections
-        - proofTimeoutMs
-        - counters
-      properties:
-        requested: {type: boolean}
-        monitoring: {type: boolean}
-        complete: {type: boolean}
-        startedAtMs: {type: integer, minimum: 0}
-        elapsedMs: {type: integer, minimum: 0}
-        status: {type: integer, minimum: 0, maximum: 2}
-        statusName:
-          type: string
-          enum: [PENDING, GOOD, BAD, INVALID]
-        fault: {type: integer, minimum: 0, maximum: 6}
-        faultName:
-          type: string
-          enum: [NONE, COUNTER_ROLLBACK, DISPATCH, MAPPING, LOCAL_VALIDATION, TIMEOUT, INVALID_CONFIGURATION, INVALID]
-        detail: {type: string, maxLength: 159}
-        requiredChipEngineWrites: {type: integer, minimum: 1}
-        minimumValidResults: {type: integer, minimum: 1, maximum: 100}
-        mappingRecoveryEnabled: {type: boolean}
-        maximumMappingRejections: {type: integer, minimum: 1, maximum: 100}
-        maximumLocalRejections: {type: integer, minimum: 0, maximum: 100}
-        proofTimeoutMs: {type: integer, minimum: 1000, maximum: 300000}
-        counters:
-          type: object
-          required:
-            - dispatchBatches
-            - dispatchedLogicalEngines
-            - dispatchedChipEngines
-            - dispatchFailures
-            - mappedResults
-            - mappingRejections
-            - mappingRejectionStreak
-            - mappingRecoveryPending
-            - locallyValidResults
-            - locallyRejectedResults
-            - localRejectionStreak
-            - localRecoveryPending
-          properties:
-            dispatchBatches: {type: integer, minimum: 0}
-            dispatchedLogicalEngines: {type: integer, minimum: 0}
-            dispatchedChipEngines: {type: integer, minimum: 0}
-            dispatchFailures: {type: integer, minimum: 0}
-            mappedResults: {type: integer, minimum: 0}
-            mappingRejections: {type: integer, minimum: 0}
-            mappingRejectionStreak: {type: integer, minimum: 0}
-            mappingRecoveryPending: {type: boolean}
-            locallyValidResults: {type: integer, minimum: 0}
-            locallyRejectedResults: {type: integer, minimum: 0}
-            localRejectionStreak: {type: integer, minimum: 0}
-            localRecoveryPending: {type: boolean}
-    BzmValidationSnapshot:
-      type: object
-      required:
-        - available
-        - runtime
-        - configuration
-        - localArm
-        - lease
-        - fault
-        - health
-        - runningEvidence
-        - bridge
-        - report
-        - stageDefinitions
-      properties:
-        available: {type: boolean}
-        runtime:
-          type: object
-          required:
-            - active
-            - initialized
-            - monitorRunning
-            - dispatchAllowed
-            - stage7Complete
-            - lastGateResult
-            - lastGateResultName
-            - owner
-            - ownerName
-          properties:
-            active: {type: boolean}
-            initialized: {type: boolean}
-            monitorRunning: {type: boolean}
-            dispatchAllowed: {type: boolean}
-            stage7Complete: {type: boolean}
-            lastGateResult: {type: integer, minimum: 0, maximum: 9}
-            lastGateResultName: {type: string}
-            owner: {type: integer, minimum: 0, maximum: 5}
-            ownerName: {type: string}
-        configuration:
-          $ref: '#/components/schemas/BzmSupervisorConfiguration'
-        localArm:
-          $ref: '#/components/schemas/BzmLocalArm'
-        lease:
-          type: object
-          required: [active, expired, deadlineMs, remainingMs, requestedMs, maximumMs]
-          properties:
-            active: {type: boolean}
-            expired: {type: boolean}
-            deadlineMs: {type: integer, minimum: 0}
-            remainingMs: {type: integer, minimum: 0}
-            requestedMs: {type: integer, minimum: 0, maximum: 300000}
-            maximumMs: {type: integer, minimum: 0, maximum: 300000}
-        fault:
-          type: object
-          required: [latched, code, detail]
-          properties:
-            latched: {type: boolean}
-            code: {type: integer, minimum: 0}
-            detail: {type: string, maxLength: 159}
-        health:
-          $ref: '#/components/schemas/BzmRuntimeHealth'
-        runningEvidence:
-          $ref: '#/components/schemas/BzmRunningEvidence'
-        bridge:
-          $ref: '#/components/schemas/BzmBridgeValidationSnapshot'
-        report:
-          $ref: '#/components/schemas/BzmValidationReport'
-        stageDefinitions:
-          type: array
-          minItems: 8
-          maxItems: 8
-          items:
-            $ref: '#/components/schemas/BzmStageDefinition'
-        operation:
-          $ref: '#/components/schemas/BzmValidationOperation'
-        error: {type: string}
-        message: {type: string}
     UpdateSettingsResponse:
       type: object
       properties:
@@ -694,6 +124,117 @@ components:
           description: Number of errors
           type: number
 
+    AsicDriverHealth:
+      type: object
+      required:
+        - lifecycle
+        - stateAgeSeconds
+        - asicCount
+        - expectedAsicCount
+        - activeEngineCount
+        - expectedEngineCount
+        - fixedFrequencyMHz
+        - fixedVoltageMV
+        - measuredVoltageV
+        - boardTemperatureC
+        - fanPercent
+        - fanRPM
+        - bridgeVersion
+        - bridgeProtocolMajor
+        - bridgeProtocolMinor
+        - bridgeCompatible
+        - parserDiscardedBytes
+        - parserRecoveries
+        - mappedResults
+        - locallyValidResults
+        - mappingRejections
+        - localRejections
+        - duplicateResults
+        - dispatchFailures
+        - lastFaultCode
+        - lastFault
+        - automaticRetry
+        - userActionRequired
+        - recommendedAction
+      properties:
+        lifecycle:
+          type: string
+          enum: [SAFE_OFF, STARTING, MINING, FAULT, MAINTENANCE]
+          description: Current production lifecycle state
+        stateAgeSeconds:
+          type: number
+          description: Seconds spent in the current lifecycle state
+        asicCount:
+          type: integer
+          description: ASICs currently proven present
+        expectedAsicCount:
+          type: integer
+          description: ASICs required by the fixed hardware profile
+        activeEngineCount:
+          type: integer
+          description: Engines successfully activated across all ASICs
+        expectedEngineCount:
+          type: integer
+          description: Engines required by the fixed hardware profile
+        fixedFrequencyMHz:
+          type: integer
+          description: Locked production clock in MHz
+        fixedVoltageMV:
+          type: integer
+          description: Locked production voltage target in millivolts
+        measuredVoltageV:
+          type: number
+          description: Measured regulator output in volts
+        boardTemperatureC:
+          type: number
+          description: Average fresh ASIC telemetry temperature in degrees Celsius
+        fanPercent:
+          type: integer
+          description: Bridge commanded fan percentage
+        fanRPM:
+          type: integer
+          description: Measured fan tachometer speed
+        bridgeVersion:
+          type: string
+          description: Bridge firmware version
+        bridgeProtocolMajor:
+          type: integer
+        bridgeProtocolMinor:
+          type: integer
+        bridgeCompatible:
+          type: boolean
+          description: Whether the bridge protocol and safety capabilities are supported
+        parserDiscardedBytes:
+          type: number
+        parserRecoveries:
+          type: number
+        mappedResults:
+          type: number
+          description: Results attributed to retained engine work
+        locallyValidResults:
+          type: number
+          description: Mapped results that passed local SHA-256 validation
+        mappingRejections:
+          type: number
+        localRejections:
+          type: number
+        duplicateResults:
+          type: number
+        dispatchFailures:
+          type: number
+        lastFaultCode:
+          type: integer
+        lastFault:
+          type: string
+          description: Short explanation of the last persistent fault
+        automaticRetry:
+          type: boolean
+        userActionRequired:
+          type: boolean
+        recommendedAction:
+          type: string
+          description: Safe next action when mining is not active
+
     SystemInfo:
       type: object
       required:
@@ -755,6 +296,7 @@ components:
         - sharesAccepted
         - sharesRejected
         - sharesRejectedReasons
+        - currentWorkAgeSeconds
         - smallCoreCount
         - ssid
         - ipv4
@@ -994,6 +536,11 @@ components:
           description: Reason(s) shares were rejected
           items:
             $ref: '#/components/schemas/SharesRejectedReason'
+        currentWorkAgeSeconds:
+          type: number
+          description: Seconds since current upstream work was dequeued, or -1 before the first job
+        asicHealth:
+          $ref: '#/components/schemas/AsicDriverHealth'
         smallCoreCount:
           type: number
           description: Number of small cores
@@ -1771,339 +1318,3 @@ paths:
           description: Unauthorized - Client not in allowed network range
         '500':
           description: Internal server error
-
-  /api/system/bridge:
-    get:
-      summary: Query Bonanza bridge information
-      description: >-
-        Queries the RP2040 bridge over its control UART. This route is
-        registered only when the configured board uses a BZM ASIC and the
-        Bonanza bridge; it remains available when the bridge is unresponsive
-        so recovery is possible.
-      operationId: getBridgeInfo
-      tags:
-        - system
-      responses:
-        '200':
-          description: Bridge information
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BridgeInfo'
-        '401':
-          description: Unauthorized - Client not in allowed network range
-
-  /api/system/bridge/firmware:
-    post:
-      summary: Update Bonanza bridge firmware
-      description: >-
-        Stages a separately supplied raw RP2040 .bin in ESP32 PSRAM and starts
-        an asynchronous SWD update. ESP-Miner contains only the small SRAM
-        flash helper and never bundles a bridge firmware image. This route is
-        registered only for configured BZM bridge products.
-      operationId: updateBridgeFirmware
-      tags:
-        - system
-      requestBody:
-        required: true
-        content:
-          application/octet-stream:
-            schema:
-              type: string
-              format: binary
-      responses:
-        '202':
-          description: Bridge update accepted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BridgeUpdateStatus'
-        '400':
-          description: Invalid RP2040 raw firmware image
-        '401':
-          description: Unauthorized - Client not in allowed network range
-        '409':
-          description: A bridge upload or update is already in progress
-        '503':
-          description: PSRAM is unavailable for image staging
-
-  /api/system/bridge/firmware/status:
-    get:
-      summary: Get Bonanza bridge update status
-      description: Returns the current asynchronous SWD update state.
-      operationId: getBridgeFirmwareUpdateStatus
-      tags:
-        - system
-      responses:
-        '200':
-          description: Bridge update status
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BridgeUpdateStatus'
-        '401':
-          description: Unauthorized - Client not in allowed network range
-
-  /api/system/bzm/validation:
-    get:
-      summary: Get Bonanza staged-validation state
-      description: >-
-        Returns the complete runtime, supervisor configuration, lease, fault,
-        last runtime-health evaluation, bridge evidence, validation report,
-        and definitions for stages 0 through 7. Registered only on configured
-        Bonanza bridge boards.
-      operationId: getBzmValidation
-      tags: [system]
-      responses:
-        '200':
-          description: Current Bonanza validation snapshot
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BzmValidationSnapshot'
-              example:
-                available: true
-                runtime:
-                  active: true
-                  initialized: true
-                  monitorRunning: true
-                  dispatchAllowed: false
-                  stage7Complete: false
-                  lastGateResult: 0
-                  lastGateResultName: ACCEPTED
-                  owner: 0
-                  ownerName: NONE
-                configuration:
-                  buildMaxStage: 0
-                  buildMaxStageName: OFF_SAFE
-                  implementedMaxStage: 7
-                  implementedMaxStageName: RUNNING
-                  poweredStagesCompiled: false
-                  productionMode: true
-                  independentKillAvailable: false
-                  allowEspOnlyKillInLab: false
-                  boardManagedSafety: false
-                  maximumLeaseMs: 30000
-                  maximumLeaseSeconds: 30
-                  firstPoweredStage: 2
-                  stage7MiningEnabled: false
-                  stage7ProofTimeoutMs: 15000
-                  stage7MinimumValidResults: 1
-                  stage7MappingRecoveryEnabled: false
-                  stage7MaximumMappingRejections: 2
-                  stage7MaximumLocalRejections: 1
-                  stage7MinimumNonceDifficulty: 1
-                  stage7LeadZeros: 36
-                  stage7DispatchGapUs: 0
-                  stage7ParserRealignEnabled: false
-                  stage7ParserRealignMaxDiscards: 32
-                  stage7ParserRealignCleanWindows: 2
-                  stage7ParserRealignMaxWindows: 6
-                  stage7ParserRealignMaxEvents: 2
-                  sensorTdmGapCount: 0
-                  pllLockConfirmSamples: 1
-                  powerConfirmation: ENERGIZE_BZM_1002
-                  armMethod: BOOT_BUTTON
-                  bootButtonRequired: true
-                  localArmWindowMs: 0
-                localArm:
-                  enabled: false
-                  method: BOOT_BUTTON
-                  active: false
-                  remainingMs: 0
-                  windowMs: 0
-                  singleUse: false
-                  command: ''
-                lease:
-                  active: false
-                  expired: false
-                  deadlineMs: 0
-                  remainingMs: 0
-                  requestedMs: 0
-                  maximumMs: 30000
-                fault: {latched: false, code: 0, detail: ''}
-                health:
-                  valid: true
-                  status: 0
-                  statusName: GOOD
-                  fault: 0
-                  faultName: NONE
-                  detail: no runtime health checks apply while OFF_SAFE or not holding
-                  sampledAtMs: 1234
-                runningEvidence:
-                  requested: false
-                  monitoring: false
-                  complete: false
-                  startedAtMs: 0
-                  elapsedMs: 0
-                  status: 0
-                  statusName: PENDING
-                  fault: 0
-                  faultName: NONE
-                  detail: Stage 7 was not requested
-                  requiredChipEngineWrites: 944
-                  minimumValidResults: 1
-                  mappingRecoveryEnabled: false
-                  maximumMappingRejections: 2
-                  maximumLocalRejections: 1
-                  proofTimeoutMs: 15000
-                  counters:
-                    dispatchBatches: 0
-                    dispatchedLogicalEngines: 0
-                    dispatchedChipEngines: 0
-                    dispatchFailures: 0
-                    mappedResults: 0
-                    mappingRejections: 0
-                    mappingRejectionStreak: 0
-                    mappingRecoveryPending: false
-                    locallyValidResults: 0
-                    locallyRejectedResults: 0
-                    localRejectionStreak: 0
-                    localRecoveryPending: false
-                bridge: {fanRpm: 0, info: {valid: false}, safetyStatus: {valid: false}}
-                report: {schemaVersion: 1, runId: 1, requestedStage: 0, overallName: GOOD, stateName: OFF_SAFE}
-                stageDefinitions:
-                  - stage: 0
-                    name: OFF_SAFE
-                    configuration: targetStage=0
-                    expectedGood: All commanded rails and readbacks prove safe-off.
-                    expectedBad: Any energized state or failed safe-off proof.
-                    energizesAsicRail: false
-                    requiresLocalArm: false
-        '401':
-          description: Unauthorized - Client not in allowed network range
-        '503':
-          description: Bonanza validation runtime is unavailable
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BzmValidationSnapshot'
-    post:
-      summary: Execute a Bonanza validation target
-      description: >-
-        Executes synchronously through targetStage. Powered targets also
-        require the configured local arm, the exact confirm string, and a
-        bounded lease. Lab images may consume a one-shot arm issued through
-        the local USB Serial/JTAG console; other images sample BOOT. HTTP 200
-        means admission succeeded; the returned report still determines
-        whether hardware was GOOD, BAD, or BLOCKED.
-      operationId: runBzmValidation
-      tags: [system]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BzmValidationRequest'
-            example:
-              targetStage: 2
-              hold: true
-              leaseSeconds: 15
-              confirm: ENERGIZE_BZM_1002
-      responses:
-        '200':
-          description: Request admitted; inspect report.overall and report.stages
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BzmValidationSnapshot'
-        '400': {description: JSON shape, type, or bound is invalid}
-        '401': {description: Unauthorized - Client not in allowed network range}
-        '408': {description: Complete request body was not received before the receive timeout}
-        '409': {description: Runtime is busy or a fault is latched}
-        '412': {description: A compiled, local-arm, confirmation, or lease precondition failed}
-        '413': {description: Request body exceeds 384 bytes}
-        '415': {description: Content-Type is not application/json}
-        '503': {description: Bonanza validation runtime is unavailable}
-
-  /api/system/bzm/validation/heartbeat:
-    post:
-      summary: Renew a held Bonanza validation lease
-      operationId: heartbeatBzmValidation
-      tags: [system]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BzmValidationHeartbeatRequest'
-            example: {leaseSeconds: 15}
-      responses:
-        '200':
-          description: Lease renewed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BzmValidationSnapshot'
-        '400': {description: JSON shape, type, or bound is invalid}
-        '401': {description: Unauthorized - Client not in allowed network range}
-        '408': {description: Complete request body was not received before the receive timeout}
-        '409': {description: No live validation/mining hold can be renewed}
-        '413': {description: Request body exceeds 384 bytes}
-        '415': {description: Content-Type is not application/json}
-        '503': {description: Bonanza validation runtime is unavailable}
-
-  /api/system/bzm/validation/stop:
-    post:
-      summary: Stop validation and prove Bonanza safe-off
-      description: >-
-        Forces safe-off and returns its proof. An empty body is accepted; a
-        supplied body must be an exact JSON object with only optional reason.
-        Exclusive updater, factory, or restart maintenance cannot be revoked
-        by this generic stop operation.
-      operationId: stopBzmValidation
-      tags: [system]
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BzmValidationStopRequest'
-            example: {reason: operator completed stage validation}
-      responses:
-        '200':
-          description: Safe-off completed and verified
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BzmValidationSnapshot'
-        '400': {description: JSON shape, type, or bound is invalid}
-        '401': {description: Unauthorized - Client not in allowed network range}
-        '408': {description: Complete request body was not received before the receive timeout}
-        '409': {description: Exclusive updater, factory, or restart maintenance owns the safe-off boundary}
-        '413': {description: Request body exceeds 384 bytes}
-        '415': {description: Content-Type is not application/json}
-        '500': {description: Safe-off could not be verified; fault details are returned}
-        '503': {description: Bonanza validation runtime is unavailable}
-
-  /api/system/bzm/fault/clear:
-    post:
-      summary: Re-prove safe-off and clear a Bonanza fault latch
-      description: >-
-        Accepts no body or an empty JSON object. Clearing succeeds only after
-        ESP and bridge safe-off evidence is freshly re-proved.
-      operationId: clearBzmValidationFault
-      tags: [system]
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              maxProperties: 0
-            example: {}
-      responses:
-        '200':
-          description: Fault latch cleared after safe-off proof
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BzmValidationSnapshot'
-        '400': {description: Request body is not an empty JSON object}
-        '401': {description: Unauthorized - Client not in allowed network range}
-        '408': {description: Complete request body was not received before the receive timeout}
-        '409': {description: No fault is latched or safe-off could not be re-proved}
-        '413': {description: Request body exceeds 384 bytes}
-        '415': {description: Content-Type is not application/json}
-        '503': {description: Bonanza validation runtime is unavailable}

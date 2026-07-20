@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "asic_result.h"
+#include "asic_driver.h"
 #include "bzm_bringup.h"
 #include "bzm_dispatch_gate.h"
 #include "bzm_running_evidence.h"
@@ -25,6 +26,8 @@ float BZM_read_temperature(GlobalState * state);
 bool BZM_running_stats_snapshot(bzm_running_stats_t * stats);
 void BZM_running_record_proof(void);
 void BZM_running_record_rejection(void);
+void BZM_record_local_result(GlobalState *state, bool valid,
+                             double nonce_difficulty);
 
 /* Thread-safe copies of the singleton transport's receive diagnostics. */
 bool BZM_get_telemetry(uint8_t asic_id, bzm_telemetry_sample_t * sample);
@@ -67,5 +70,11 @@ void BZM_staged_set_dispatch_authorizer(bzm_dispatch_authorizer_t authorize, voi
 void BZM_staged_set_operation_authorizer(bzm_dispatch_authorizer_t authorize, void * context);
 /* Pump the singleton parser for health monitoring; returns emitted frames. */
 size_t BZM_staged_poll(uint16_t timeout_ms);
+
+/* The production controller publishes a compact generic snapshot here; the
+ * shared HTTP/API layer reads it only through ASIC_get_health(). */
+void BZM_driver_health_publish(const asic_driver_health_t *health);
+bool BZM_driver_health_snapshot(GlobalState *state,
+                                asic_driver_health_t *health);
 
 #endif // BZM_DRIVER_H

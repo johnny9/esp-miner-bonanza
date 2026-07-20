@@ -13,6 +13,7 @@
 #include "cjson_utils.h"
 #include "statistics_task.h"
 #include "stratum_v2_task.h"
+#include "asic.h"
 
 
 static const char *get_reset_reason_str(esp_reset_reason_t reason)
@@ -63,6 +64,13 @@ static void system_api_add_telemetry(cJSON *root, GlobalState *g) {
     cJSON_AddFloatToObject(root, "errorPercentage", g->SYSTEM_MODULE.error_percentage);
     cJSON_AddNumberToObject(root, "sharesAccepted", g->SYSTEM_MODULE.shares_accepted);
     cJSON_AddNumberToObject(root, "sharesRejected", g->SYSTEM_MODULE.shares_rejected);
+    float work_age_seconds = -1.0f;
+    if (g->SYSTEM_MODULE.last_work_received_us > 0) {
+        work_age_seconds = (float)(esp_timer_get_time() -
+            g->SYSTEM_MODULE.last_work_received_us) / 1000000.0f;
+        if (work_age_seconds < 0.0f) work_age_seconds = 0.0f;
+    }
+    cJSON_AddFloatToObject(root, "currentWorkAgeSeconds", work_age_seconds);
     cJSON_AddNumberToObject(root, "bestDiff", g->SYSTEM_MODULE.best_nonce_diff);
     cJSON_AddNumberToObject(root, "bestSessionDiff", g->SYSTEM_MODULE.best_session_nonce_diff);
     cJSON_AddNumberToObject(root, "poolDifficulty", g->pool_difficulty);
@@ -104,6 +112,70 @@ static void system_api_add_telemetry(cJSON *root, GlobalState *g) {
     if (g->SYSTEM_MODULE.hardware_fault) {
         cJSON_AddStringToObject(root, "hardware_fault", g->SYSTEM_MODULE.hardware_fault_msg);
     }
+}
+
+static void system_api_add_asic_health(cJSON *root, GlobalState *g)
+{
+    asic_driver_health_t health;
+    if (root == NULL || g == NULL || !ASIC_get_health(g, &health)) return;
+
+    cJSON *object = cJSON_CreateObject();
+    if (object == NULL) return;
+    cJSON_AddItemToObject(root, "asicHealth", object);
+    cJSON_AddStringToObject(object, "lifecycle",
+                            asic_driver_lifecycle_name(health.lifecycle));
+    uint64_t current_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    double state_age_seconds = current_ms >= health.state_since_ms
+        ? (double)(current_ms - health.state_since_ms) / 1000.0 : 0.0;
+    cJSON_AddNumberToObject(object, "stateAgeSeconds", state_age_seconds);
+    cJSON_AddNumberToObject(object, "asicCount", health.asic_count);
+    cJSON_AddNumberToObject(object, "expectedAsicCount",
+                            health.expected_asic_count);
+    cJSON_AddNumberToObject(object, "activeEngineCount",
+                            health.active_engine_count);
+    cJSON_AddNumberToObject(object, "expectedEngineCount",
+                            health.expected_engine_count);
+    cJSON_AddNumberToObject(object, "fixedFrequencyMHz",
+                            health.fixed_frequency_mhz);
+    cJSON_AddNumberToObject(object, "fixedVoltageMV",
+                            health.fixed_voltage_mv);
+    cJSON_AddNumberToObject(object, "measuredVoltageV",
+                            health.measured_voltage_v);
+    cJSON_AddNumberToObject(object, "boardTemperatureC",
+                            health.board_temperature_c);
+    cJSON_AddNumberToObject(object, "fanPercent", health.fan_percent);
+    cJSON_AddNumberToObject(object, "fanRPM", health.fan_rpm);
+    cJSON_AddStringToObject(object, "bridgeVersion", health.bridge_version);
+    cJSON_AddNumberToObject(object, "bridgeProtocolMajor",
+                            health.bridge_protocol_major);
+    cJSON_AddNumberToObject(object, "bridgeProtocolMinor",
+                            health.bridge_protocol_minor);
+    cJSON_AddBoolToObject(object, "bridgeCompatible",
+                          health.bridge_compatible);
+    cJSON_AddNumberToObject(object, "parserDiscardedBytes",
+                            (double)health.parser_discarded_bytes);
+    cJSON_AddNumberToObject(object, "parserRecoveries",
+                            (double)health.parser_recoveries);
+    cJSON_AddNumberToObject(object, "mappedResults",
+                            (double)health.mapped_results);
+    cJSON_AddNumberToObject(object, "locallyValidResults",
+                            (double)health.locally_valid_results);
+    cJSON_AddNumberToObject(object, "mappingRejections",
+                            (double)health.mapping_rejections);
+    cJSON_AddNumberToObject(object, "localRejections",
+                            (double)health.local_rejections);
+    cJSON_AddNumberToObject(object, "duplicateResults",
+                            (double)health.duplicate_results);
+    cJSON_AddNumberToObject(object, "dispatchFailures",
+                            (double)health.dispatch_failures);
+    cJSON_AddNumberToObject(object, "lastFaultCode",
+                            health.last_fault_code);
+    cJSON_AddStringToObject(object, "lastFault", health.last_fault);
+    cJSON_AddBoolToObject(object, "automaticRetry", health.automatic_retry);
+    cJSON_AddBoolToObject(object, "userActionRequired",
+                          health.user_action_required);
+    cJSON_AddStringToObject(object, "recommendedAction",
+                            health.recommended_action);
 }
 
 static void system_api_add_config(cJSON *root, GlobalState *g) {
@@ -297,6 +369,7 @@ cJSON* system_api_get_full_json(GlobalState *g) {
     system_api_add_telemetry(root, g);
     system_api_add_config(root, g);
     system_api_add_hashrate_monitor(root, g);
+    system_api_add_asic_health(root, g);
 
     // Arrays that involve global state loops (not simple addition)
     system_api_add_rejected_reasons(root, g);

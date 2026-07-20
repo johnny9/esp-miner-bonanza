@@ -54,6 +54,7 @@ typedef struct
     uint64_t shares_accepted;
     uint64_t shares_rejected;
     uint64_t work_received;
+    int64_t last_work_received_us;
     RejectedReasonStat rejected_reason_stats[10];
     int rejected_reason_stats_count;
     int screen_page;

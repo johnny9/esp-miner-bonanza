@@ -45,11 +45,8 @@
 #include "log_buffer.h"
 #include "cjson_utils.h"
 #include "utils.h"
-#include "bzm_bridge.h"
-#include "bzm_bridge_update.h"
 #include "bzm_ota_guard.h"
-#include "bzm_validation_api.h"
-#include "bzm_validation_runtime.h"
+#include "bzm_controller.h"
 
 static const char * TAG = "http_server";
 static const char * CORS_TAG = "CORS";
@@ -78,8 +75,6 @@ static int system_info_prebuffer_len = 256;
 static int system_statistics_prebuffer_len = 256;
 static int system_wifi_scan_prebuffer_len = 256;
 static int api_common_prebuffer_len = 256;
-static int bridge_api_prebuffer_len = 256;
-static pthread_mutex_t bridge_upload_lock = PTHREAD_MUTEX_INITIALIZER;
 static GlobalState * GLOBAL_STATE;
 
 static bool bzm_ota_maintenance_acquire(void *context)
@@ -89,7 +84,7 @@ static bool bzm_ota_maintenance_acquire(void *context)
         !GLOBAL_STATE->DEVICE_CONFIG.bonanza_bridge) {
         return true;
     }
-    if (bzm_validation_runtime_acquire_maintenance(
+    if (bzm_controller_acquire_maintenance(
             BZM_SUPERVISOR_OWNER_ESP_OTA)) {
         return true;
     }
@@ -101,7 +96,7 @@ static bool bzm_ota_maintenance_release(void *context)
     (void)context;
     return GLOBAL_STATE == NULL ||
            !GLOBAL_STATE->DEVICE_CONFIG.bonanza_bridge ||
-           bzm_validation_runtime_release_maintenance(
+           bzm_controller_release_maintenance(
                BZM_SUPERVISOR_OWNER_ESP_OTA);
 }
 
@@ -999,7 +994,7 @@ static esp_err_t POST_restart(httpd_req_t * req)
         return ESP_OK;
     }
 
-    if (!bzm_validation_runtime_prepare_restart()) {
+    if (!bzm_controller_prepare_restart()) {
         httpd_resp_set_status(req, "409 Conflict");
         return httpd_resp_sendstr(
             req,
@@ -1420,214 +1415,6 @@ esp_err_t POST_WWW_update(httpd_req_t * req)
     return ESP_OK;
 }
 
-static cJSON *bridge_update_status_json(void)
-{
-    bzm_bridge_update_status_t status;
-    BZM_bridge_update_get_status(&status);
-
-    cJSON *root = cJSON_CreateObject();
-    if (root == NULL) return NULL;
-    cJSON_AddStringToObject(root, "state",
-                            bzm_bridge_update_state_name(status.state));
-    cJSON_AddNumberToObject(root, "progress", status.progress_percent);
-    cJSON_AddNumberToObject(root, "imageSize", status.image_size);
-    cJSON_AddBoolToObject(root, "running", status.running);
-    cJSON_AddBoolToObject(root, "versionQuerySupported",
-                          status.version_query_supported);
-    if (status.current_version[0] != '\0') {
-        cJSON_AddStringToObject(root, "currentVersion",
-                                status.current_version);
-    } else {
-        cJSON_AddNullToObject(root, "currentVersion");
-    }
-    if (status.error[0] != '\0') {
-        cJSON_AddStringToObject(root, "error", status.error);
-    } else {
-        cJSON_AddNullToObject(root, "error");
-    }
-    return root;
-}
-
-static esp_err_t GET_bridge_info(httpd_req_t *req)
-{
-    if (is_network_allowed(req) != ESP_OK) {
-        return httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED,
-                                   "Unauthorized");
-    }
-    if (set_cors_headers(req) != ESP_OK) {
-        httpd_resp_send_500(req);
-        return ESP_OK;
-    }
-
-    bzm_bridge_info_t info;
-    esp_err_t info_err = BZM_bridge_get_info(&info);
-    bool available = info_err == ESP_OK || info_err == ESP_ERR_NOT_SUPPORTED;
-    cJSON *root = cJSON_CreateObject();
-    if (root == NULL) {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                                   "Memory allocation failed");
-    }
-    cJSON_AddBoolToObject(root, "available", available);
-    cJSON_AddBoolToObject(root, "versionQuerySupported",
-                          info_err == ESP_OK);
-    if (info_err == ESP_OK) {
-        cJSON_AddStringToObject(root, "version", info.version);
-        cJSON_AddNumberToObject(root, "protocolMajor",
-                                info.protocol_major);
-        cJSON_AddNumberToObject(root, "protocolMinor",
-                                info.protocol_minor);
-    } else {
-        cJSON_AddNullToObject(root, "version");
-        cJSON_AddNullToObject(root, "protocolMajor");
-        cJSON_AddNullToObject(root, "protocolMinor");
-    }
-
-    httpd_resp_set_type(req, "application/json");
-    esp_err_t result = HTTP_send_json(
-        req, root, &bridge_api_prebuffer_len);
-    cJSON_Delete(root);
-    return result;
-}
-
-static esp_err_t GET_bridge_update_status(httpd_req_t *req)
-{
-    if (is_network_allowed(req) != ESP_OK) {
-        return httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED,
-                                   "Unauthorized");
-    }
-    if (set_cors_headers(req) != ESP_OK) {
-        httpd_resp_send_500(req);
-        return ESP_OK;
-    }
-    cJSON *root = bridge_update_status_json();
-    if (root == NULL) {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                                   "Memory allocation failed");
-    }
-    httpd_resp_set_type(req, "application/json");
-    esp_err_t result = HTTP_send_json(
-        req, root, &bridge_api_prebuffer_len);
-    cJSON_Delete(root);
-    return result;
-}
-
-static esp_err_t bridge_send_error(httpd_req_t *req, const char *status,
-                                   const char *message)
-{
-    httpd_resp_set_status(req, status);
-    httpd_resp_set_type(req, "text/plain");
-    return httpd_resp_sendstr(req, message);
-}
-
-static esp_err_t POST_bridge_firmware(httpd_req_t *req)
-{
-    if (is_network_allowed(req) != ESP_OK) {
-        return httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED,
-                                   "Unauthorized");
-    }
-    if (set_cors_headers(req) != ESP_OK) {
-        httpd_resp_send_500(req);
-        return ESP_OK;
-    }
-
-    wifi_mode_t mode;
-    esp_wifi_get_mode(&mode);
-    if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "Not allowed in AP mode");
-        return ESP_OK;
-    }
-    if (pthread_mutex_trylock(&bridge_upload_lock) != 0) {
-        bridge_send_error(req, "409 Conflict",
-                          "A bridge upload is already in progress");
-        return ESP_OK;
-    }
-    if (BZM_bridge_update_is_running()) {
-        bridge_send_error(req, "409 Conflict",
-                          "A bridge update is already in progress");
-        pthread_mutex_unlock(&bridge_upload_lock);
-        return ESP_OK;
-    }
-
-    uint8_t *image = NULL;
-    esp_err_t result = ESP_OK;
-    if (req->content_len < 0x108 ||
-        req->content_len > BZM_BRIDGE_FLASH_CAPACITY) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "Invalid bridge firmware size");
-        goto done;
-    }
-    if (!GLOBAL_STATE->psram_is_available ||
-        !esp_psram_is_initialized()) {
-        bridge_send_error(req, "503 Service Unavailable",
-                          "PSRAM is required for bridge updates");
-        goto done;
-    }
-
-    image = heap_caps_malloc(req->content_len,
-                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (image == NULL) {
-        bridge_send_error(req, "503 Service Unavailable",
-                          "Unable to stage bridge firmware");
-        goto done;
-    }
-
-    size_t received = 0;
-    unsigned int consecutive_timeouts = 0;
-    while (received < (size_t)req->content_len) {
-        int count = httpd_req_recv(
-            req, (char *)image + received,
-            MIN((size_t)1024, (size_t)req->content_len - received));
-        if (count == HTTPD_SOCK_ERR_TIMEOUT && consecutive_timeouts++ < 10) {
-            continue;
-        }
-        if (count <= 0) {
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                                "Bridge firmware upload failed");
-            goto done;
-        }
-        consecutive_timeouts = 0;
-        received += count;
-    }
-
-    esp_err_t validation = bzm_bridge_update_validate_image(
-        image, received);
-    if (validation != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "Invalid RP2040 raw firmware image");
-        goto done;
-    }
-
-    esp_err_t start_err = BZM_bridge_update_start(
-        GLOBAL_STATE, image, received);
-    if (start_err != ESP_OK) {
-        if (start_err == ESP_ERR_INVALID_STATE) {
-            bridge_send_error(req, "409 Conflict",
-                              "A bridge update is already in progress");
-        } else {
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                                "Unable to start bridge update");
-        }
-        goto done;
-    }
-    image = NULL; /* The update task owns the staged image. */
-
-    cJSON *root = bridge_update_status_json();
-    if (root == NULL) {
-        httpd_resp_send_500(req);
-        goto done;
-    }
-    httpd_resp_set_status(req, "202 Accepted");
-    httpd_resp_set_type(req, "application/json");
-    result = HTTP_send_json(req, root, &bridge_api_prebuffer_len);
-    cJSON_Delete(root);
-
-done:
-    free(image);
-    pthread_mutex_unlock(&bridge_upload_lock);
-    return result;
-}
-
 /*
  * Handle OTA file upload
  */
@@ -1906,44 +1693,6 @@ esp_err_t start_rest_server(void * pvParameters)
         .user_ctx = NULL
     };
     httpd_register_uri_handler(server, &update_post_ota_www);
-
-    /*
-     * The bridge is recoverable even when its UART firmware is broken, so
-     * route availability follows the configured board model rather than a
-     * successful bridge probe. Non-BZM products do not register these URIs.
-     */
-    if (bzm_bridge_update_board_supported(&GLOBAL_STATE->DEVICE_CONFIG)) {
-        ESP_ERROR_CHECK(bzm_validation_api_register(server, rest_context));
-
-        httpd_uri_t bridge_info_get_uri = {
-            .uri = "/api/system/bridge",
-            .method = HTTP_GET,
-            .handler = GET_bridge_info,
-            .user_ctx = rest_context,
-        };
-        ESP_ERROR_CHECK(httpd_register_uri_handler(
-            server, &bridge_info_get_uri));
-
-        if (bzm_bridge_update_supported(&GLOBAL_STATE->DEVICE_CONFIG)) {
-            httpd_uri_t bridge_firmware_post_uri = {
-                .uri = "/api/system/bridge/firmware",
-                .method = HTTP_POST,
-                .handler = POST_bridge_firmware,
-                .user_ctx = rest_context,
-            };
-            ESP_ERROR_CHECK(httpd_register_uri_handler(
-                server, &bridge_firmware_post_uri));
-
-            httpd_uri_t bridge_status_get_uri = {
-                .uri = "/api/system/bridge/firmware/status",
-                .method = HTTP_GET,
-                .handler = GET_bridge_update_status,
-                .user_ctx = rest_context,
-            };
-            ESP_ERROR_CHECK(httpd_register_uri_handler(
-                server, &bridge_status_get_uri));
-        }
-    }
 
     httpd_uri_t ws = {
         .uri = "/api/ws", 

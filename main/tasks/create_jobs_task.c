@@ -115,6 +115,8 @@ void create_jobs_task(void *pvParameters)
             }
 
             current_work = new_work;
+            GLOBAL_STATE->SYSTEM_MODULE.last_work_received_us =
+                esp_timer_get_time();
 
             if (GLOBAL_STATE->new_set_mining_difficulty_msg) {
                 ESP_LOGI(TAG, "New pool difficulty %.2f", GLOBAL_STATE->pool_difficulty);

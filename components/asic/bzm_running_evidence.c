@@ -85,12 +85,12 @@ bzm_running_evidence_result_t bzm_running_evidence_evaluate(
          config->maximum_mapping_rejections == 0)) {
         return result_with(BZM_RUNNING_EVIDENCE_BAD,
                            BZM_RUNNING_EVIDENCE_FAULT_INVALID_CONFIGURATION,
-                           NULL, elapsed_ms, "Stage-7 evidence configuration is invalid");
+                           NULL, elapsed_ms, "mining evidence configuration is invalid");
     }
     if (counter_rolled_back(baseline, current)) {
         return result_with(BZM_RUNNING_EVIDENCE_BAD,
                            BZM_RUNNING_EVIDENCE_FAULT_COUNTER_ROLLBACK,
-                           NULL, elapsed_ms, "Stage-7 evidence counters moved backwards");
+                           NULL, elapsed_ms, "mining evidence counters moved backwards");
     }
 
     bzm_running_stats_t observed = subtract_stats(current, baseline);
@@ -229,7 +229,7 @@ bzm_running_evidence_result_t bzm_running_evidence_track(
         return result_with(BZM_RUNNING_EVIDENCE_BAD,
                            BZM_RUNNING_EVIDENCE_FAULT_INVALID_CONFIGURATION,
                            NULL, overall_elapsed_ms,
-                           "Stage-7 evidence lifecycle is unavailable");
+                           "mining evidence lifecycle is unavailable");
     }
 
     /* Zero elapsed classifies immediate configuration/counter/streak faults
@@ -244,7 +244,7 @@ bzm_running_evidence_result_t bzm_running_evidence_track(
             return result_with(BZM_RUNNING_EVIDENCE_BAD,
                                BZM_RUNNING_EVIDENCE_FAULT_TIMEOUT,
                                &result.observed, overall_elapsed_ms,
-                               "initial Stage-7 dispatch and local nonce proof missed its deadline");
+                               "initial dispatch and local nonce proof missed its deadline");
         }
         if (result.status == BZM_RUNNING_EVIDENCE_GOOD) {
             lifecycle->completed_once = true;

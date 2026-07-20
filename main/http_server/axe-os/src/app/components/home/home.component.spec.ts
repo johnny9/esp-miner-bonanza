@@ -32,6 +32,7 @@ import { LocalStorageService } from 'src/app/local-storage.service';
 import { DashboardEditService } from 'src/app/services/dashboard-edit.service';
 import { LayoutService } from 'src/app/layout/service/app.layout.service';
 import { SystemAsic as ISystemASIC, SystemInfo as ISystemInfo } from 'src/app/generated/models';
+import { of } from 'rxjs';
 
 describe('HomeComponent', () => {
   let component: HomeComponent;
@@ -114,6 +115,70 @@ describe('HomeComponent', () => {
     info.frequency = 49;
     component.handleSystemMessages(info, { duration: 0, startTime: null });
     expect(component.messages.some(message => message.type === 'FREQUENCY_LOW')).toBeTrue();
+  });
+
+  it('renders the production mining, pool, topology, power, bridge, and result health', () => {
+    component.activePoolURL = 'pool.example';
+    component.activePoolPort = 3333;
+    component.activePoolProtocol = 'SV1';
+    component.info$ = of({
+      version: 'mvo-test',
+      currentWorkAgeSeconds: 4.2,
+      poolConnectionInfo: 'Connected',
+      sharesAccepted: 7,
+      sharesRejected: 1,
+      hashRate: 710,
+      hashRate_1m: 700,
+      asicHealth: {
+        lifecycle: 'MINING',
+        stateAgeSeconds: 125,
+        asicCount: 4,
+        expectedAsicCount: 4,
+        activeEngineCount: 944,
+        expectedEngineCount: 944,
+        fixedFrequencyMHz: 800,
+        fixedVoltageMV: 2800,
+        measuredVoltageV: 2.8,
+        boardTemperatureC: 64.5,
+        fanPercent: 100,
+        fanRPM: 5200,
+        bridgeVersion: '0.0.1+mvo',
+        bridgeProtocolMajor: 1,
+        bridgeProtocolMinor: 1,
+        bridgeCompatible: true,
+        parserDiscardedBytes: 2,
+        parserRecoveries: 1,
+        mappedResults: 240,
+        locallyValidResults: 220,
+        mappingRejections: 3,
+        localRejections: 2,
+        duplicateResults: 0,
+        dispatchFailures: 0,
+        lastFaultCode: 0,
+        lastFault: '',
+        automaticRetry: false,
+        userActionRequired: false,
+        recommendedAction: '',
+      },
+    } as ISystemInfo);
+
+    fixture.detectChanges();
+
+    const card = fixture.nativeElement.querySelector('[data-testid="asic-health"]') as HTMLElement;
+    const text = card.textContent?.replace(/\s+/g, ' ') ?? '';
+    expect(text).toContain('Miner health MINING');
+    expect(text).toContain('pool.example:3333');
+    expect(text).toContain('Work age: 4.2 s');
+    expect(text).toContain('4 / 4 ASICs');
+    expect(text).toContain('944 / 944 engines');
+    expect(text).toContain('800 MHz at 2800 mV fixed');
+    expect(text).toContain('2.800 V measured');
+    expect(text).toContain('protocol 1.1');
+    expect(text).toContain('Mapped results: 240');
+    expect(text).toContain('Locally valid: 220');
+    expect(text).not.toContain('validation stage');
+    expect(text).not.toContain('operator lease');
+    expect(text).not.toContain('manual arm');
   });
 
   describe('stale data and visibility state', () => {

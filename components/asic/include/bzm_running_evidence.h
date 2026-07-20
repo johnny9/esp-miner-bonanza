@@ -18,6 +18,7 @@ typedef struct
     bool mapping_recovery_pending;
     uint64_t locally_valid_results;
     uint64_t locally_rejected_results;
+    uint64_t duplicate_results;
     uint32_t local_rejection_streak;
     bool local_recovery_pending;
 } bzm_running_stats_t;

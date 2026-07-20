@@ -1,4 +1,4 @@
-#include "bzm_validation_runtime.h"
+#include "bzm_controller.h"
 
 #include <math.h>
 #include <pthread.h>
@@ -8,10 +8,8 @@
 
 #include "TPS546.h"
 #include "asic_result_task.h"
-#include "bzm_bridge_update.h"
 #include "bzm_driver.h"
 #include "bzm_lease_guard.h"
-#include "bzm_local_arm.h"
 #include "bzm_power.h"
 #include "bzm_running_evidence.h"
 #include "bzm_runtime_health.h"
@@ -33,13 +31,13 @@
 #define BZM_HEALTH_PERIOD_MS 500U
 #define BZM_SAFE_OFF_TIMEOUT_MS 1500U
 #define BZM_SAFE_OFF_SAMPLE_MS 25U
+#define BZM_CONTROLLER_WATCHDOG_MS 300000U
 
 typedef struct
 {
     pthread_mutex_t lock;
     GlobalState * global_state;
     bzm_supervisor_t supervisor;
-    bzm_runtime_gate_result_t last_gate_result;
     bzm_bridge_info_t bridge_info;
     bzm_bridge_safety_status_t bridge_status;
     bool active;
@@ -65,6 +63,12 @@ typedef struct
     bool health_valid;
     uint64_t health_sampled_at_ms;
     bzm_runtime_health_result_t health;
+    bool tps_sample_valid;
+    bzm_runtime_health_tps_sample_t tps_sample;
+    bool parser_sample_valid;
+    bzm_serial_parser_stats_t parser_sample;
+    uint32_t parser_recovery_count;
+    float board_temperature_c;
     bzm_ch2_confirmation_t ch2_confirmation;
     bzm_pll_lock_confirmation_t pll_lock_confirmation;
     bool running_evidence_requested;
@@ -74,10 +78,11 @@ typedef struct
     bzm_running_evidence_lifecycle_t running_evidence_lifecycle;
     bzm_running_evidence_result_t running_evidence;
     uint16_t fan_rpm;
-    bzm_local_arm_t local_arm;
 } bzm_runtime_state_t;
 
 static const char * TAG = "bzm_controller";
+static bool bridge_control_contract_compatible(
+    const bzm_bridge_safety_status_t *status);
 static bzm_runtime_state_t RUNTIME = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
 };
@@ -85,21 +90,17 @@ static bzm_runtime_state_t RUNTIME = {
 static bzm_bringup_telemetry_policy_t telemetry_policy(void);
 static bool runtime_is_holding_locked(void);
 static bzm_runtime_health_result_t sample_runtime_health_locked(void);
+static void publish_driver_health_locked(asic_driver_lifecycle_t lifecycle);
 
 static bzm_running_evidence_config_t running_evidence_config(void)
 {
-#ifdef CONFIG_BZM_1002_STAGE7_ALLOW_MAPPING_RECOVERY
-    const bool allow_mapping_recovery = true;
-#else
-    const bool allow_mapping_recovery = false;
-#endif
     return (bzm_running_evidence_config_t){
         .required_chip_engine_writes = BZM_ENGINES_PER_ASIC * BZM_BRINGUP_ASIC_COUNT,
-        .minimum_valid_results = CONFIG_BZM_1002_STAGE7_MIN_VALID_RESULTS,
-        .allow_mapping_recovery = allow_mapping_recovery,
-        .maximum_mapping_rejections = CONFIG_BZM_1002_STAGE7_MAX_MAPPING_REJECTIONS,
-        .maximum_local_rejections = CONFIG_BZM_1002_STAGE7_MAX_LOCAL_REJECTIONS,
-        .proof_timeout_ms = CONFIG_BZM_1002_STAGE7_PROOF_TIMEOUT_SECONDS * 1000U,
+        .minimum_valid_results = CONFIG_BZM_1002_MIN_VALID_RESULTS,
+        .allow_mapping_recovery = true,
+        .maximum_mapping_rejections = CONFIG_BZM_1002_MAX_MAPPING_REJECTIONS,
+        .maximum_local_rejections = CONFIG_BZM_1002_MAX_LOCAL_REJECTIONS,
+        .proof_timeout_ms = CONFIG_BZM_1002_PROOF_TIMEOUT_SECONDS * 1000U,
     };
 }
 
@@ -115,7 +116,7 @@ static void reset_running_evidence_locked(bool requested)
         .fault = BZM_RUNNING_EVIDENCE_FAULT_NONE,
     };
     snprintf(RUNTIME.running_evidence.detail, sizeof(RUNTIME.running_evidence.detail), "%s",
-             requested ? "waiting for Stage-7 RUNNING admission" : "Stage 7 was not requested");
+             requested ? "waiting for mining proof" : "mining proof is not active");
 }
 
 static bzm_running_evidence_result_t evaluate_running_evidence_locked(uint64_t current_ms)
@@ -130,7 +131,7 @@ static bzm_running_evidence_result_t evaluate_running_evidence_locked(uint64_t c
             .fault = BZM_RUNNING_EVIDENCE_FAULT_INVALID_CONFIGURATION,
         };
         snprintf(RUNTIME.running_evidence.detail, sizeof(RUNTIME.running_evidence.detail),
-                 "Stage-7 driver evidence is unavailable");
+                 "mining driver evidence is unavailable");
         return RUNTIME.running_evidence;
     }
     bzm_running_evidence_config_t config = running_evidence_config();
@@ -140,14 +141,12 @@ static bzm_running_evidence_result_t evaluate_running_evidence_locked(uint64_t c
                                    &current, &config,
                                    RUNTIME.running_evidence_started_at_ms,
                                    current_ms);
-#ifdef CONFIG_BZM_1002_STAGE7_ALLOW_PARSER_REALIGN
     if (RUNTIME.running_evidence.status == BZM_RUNNING_EVIDENCE_GOOD && RUNTIME.parser_realign_valid &&
         RUNTIME.parser_realign.recovering) {
         snprintf(RUNTIME.running_evidence.detail, sizeof(RUNTIME.running_evidence.detail),
                  "proof retained; bounded parser realignment clean windows %u/%u",
-                 (unsigned) RUNTIME.parser_realign.clean_windows, (unsigned) CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_CLEAN_WINDOWS);
+                 (unsigned) RUNTIME.parser_realign.clean_windows, (unsigned) CONFIG_BZM_1002_PARSER_REALIGN_CLEAN_WINDOWS);
     }
-#endif
     if (RUNTIME.running_evidence.status == BZM_RUNNING_EVIDENCE_GOOD) {
         snprintf(RUNTIME.supervisor.report.stages[BZM_STAGE_RUNNING].detail,
                  sizeof(RUNTIME.supervisor.report.stages[BZM_STAGE_RUNNING].detail), "RUNNING GOOD: %.140s",
@@ -162,12 +161,88 @@ static bzm_running_evidence_result_t evaluate_running_evidence_locked(uint64_t c
 static bool runtime_restart_guard(void * context)
 {
     (void) context;
-    return bzm_validation_runtime_prepare_restart();
+    return bzm_controller_prepare_restart();
 }
 
 static uint64_t now_ms(void)
 {
     return (uint64_t) (esp_timer_get_time() / 1000);
+}
+
+static asic_driver_lifecycle_t current_lifecycle_locked(void)
+{
+    if (RUNTIME.supervisor.fault_latched) return ASIC_DRIVER_FAULT;
+    if (bzm_supervisor_owner_is_maintenance(RUNTIME.supervisor.owner)) {
+        return ASIC_DRIVER_MAINTENANCE;
+    }
+    if (RUNTIME.supervisor.owner == BZM_SUPERVISOR_OWNER_MINING) {
+        return ASIC_DRIVER_MINING;
+    }
+    if (RUNTIME.supervisor.owner == BZM_SUPERVISOR_OWNER_VALIDATION) {
+        return ASIC_DRIVER_STARTING;
+    }
+    return ASIC_DRIVER_SAFE_OFF;
+}
+
+static void publish_driver_health_locked(asic_driver_lifecycle_t lifecycle)
+{
+    bzm_bringup_state_t bringup = {0};
+    bzm_running_stats_t running = {0};
+    (void)BZM_staged_get_state(&bringup);
+    (void)BZM_running_stats_snapshot(&running);
+
+    asic_driver_health_t health = {
+        .available = true,
+        .lifecycle = lifecycle,
+        .asic_count = bringup.chain_verified ? BZM_BRINGUP_ASIC_COUNT : 0,
+        .expected_asic_count = BZM_BRINGUP_ASIC_COUNT,
+        .active_engine_count = bringup.balanced_ramp_verified
+            ? BZM_ENGINES_PER_ASIC * BZM_BRINGUP_ASIC_COUNT : 0,
+        .expected_engine_count = BZM_ENGINES_PER_ASIC * BZM_BRINGUP_ASIC_COUNT,
+        .fixed_frequency_mhz = 800,
+        .fixed_voltage_mv = 2800,
+        .measured_voltage_v = RUNTIME.tps_sample_valid
+            ? RUNTIME.tps_sample.vout_v : 0.0f,
+        .board_temperature_c = RUNTIME.board_temperature_c,
+        .fan_percent = RUNTIME.bridge_status_valid
+            ? RUNTIME.bridge_status.fan_percent : 0,
+        .fan_rpm = RUNTIME.fan_rpm,
+        .bridge_protocol_major = RUNTIME.bridge_info_valid
+            ? RUNTIME.bridge_info.protocol_major : 0,
+        .bridge_protocol_minor = RUNTIME.bridge_info_valid
+            ? RUNTIME.bridge_info.protocol_minor : 0,
+        .bridge_compatible = RUNTIME.bridge_info_valid &&
+            RUNTIME.bridge_status_valid &&
+            bzm_bridge_info_supports_safety(&RUNTIME.bridge_info) &&
+            bridge_control_contract_compatible(&RUNTIME.bridge_status),
+        .parser_discarded_bytes = RUNTIME.parser_sample_valid
+            ? RUNTIME.parser_sample.discarded_bytes : 0,
+        .parser_recoveries = RUNTIME.parser_recovery_count,
+        .mapped_results = running.mapped_results,
+        .locally_valid_results = running.locally_valid_results,
+        .mapping_rejections = running.mapping_rejections,
+        .local_rejections = running.locally_rejected_results,
+        .duplicate_results = running.duplicate_results,
+        .dispatch_failures = running.dispatch_failures,
+    };
+    if (RUNTIME.bridge_info_valid) {
+        snprintf(health.bridge_version, sizeof(health.bridge_version), "%s",
+                 RUNTIME.bridge_info.version);
+    }
+    if (RUNTIME.supervisor.fault_latched) {
+        health.last_fault_code = RUNTIME.supervisor.fault_code;
+        snprintf(health.last_fault, sizeof(health.last_fault), "%s",
+                 RUNTIME.supervisor.fault_detail);
+        health.user_action_required = true;
+        snprintf(health.recommended_action,
+                 sizeof(health.recommended_action),
+                 "Restart the miner; if the fault returns, inspect power, fan, and bridge diagnostics");
+    } else if (lifecycle == ASIC_DRIVER_MAINTENANCE) {
+        snprintf(health.recommended_action,
+                 sizeof(health.recommended_action),
+                 "Wait for maintenance to finish before mining resumes");
+    }
+    BZM_driver_health_publish(&health);
 }
 
 static void close_dispatch_locked(void)
@@ -201,6 +276,7 @@ static void sync_dispatch_locked(void)
     uint64_t current_ms = now_ms();
     if (!bzm_supervisor_dispatch_allowed(&RUNTIME.supervisor, current_ms)) {
         close_dispatch_locked();
+        publish_driver_health_locked(current_lifecycle_locked());
         return;
     }
 
@@ -208,6 +284,7 @@ static void sync_dispatch_locked(void)
      * this callback before dispatch and before every engine write. */
     atomic_store_explicit(&RUNTIME.dispatch_deadline_ms, RUNTIME.supervisor.lease_deadline_ms, memory_order_release);
     atomic_store_explicit(&RUNTIME.dispatch_enabled, true, memory_order_release);
+    publish_driver_health_locked(current_lifecycle_locked());
 }
 
 static bool start_mining_tasks_locked(void)
@@ -256,6 +333,7 @@ static bool start_production_mining_locked(void)
     }
 
     close_dispatch_locked();
+    publish_driver_health_locked(ASIC_DRIVER_STARTING);
     reset_running_evidence_locked(true);
     bzm_ch2_confirmation_init(&RUNTIME.ch2_confirmation);
     bzm_pll_lock_confirmation_init(&RUNTIME.pll_lock_confirmation);
@@ -376,6 +454,8 @@ static bzm_runtime_health_result_t sample_runtime_health_locked(void)
             input.tps.iout_a = power.read_iout;
             input.tps.temperature_c = power.read_temp1;
         }
+        RUNTIME.tps_sample = input.tps;
+        RUNTIME.tps_sample_valid = input.tps.available;
     }
 
     if (input.holding && input.reached_stage >= BZM_STAGE_CHAIN_4) {
@@ -385,12 +465,11 @@ static bzm_runtime_health_result_t sample_runtime_health_locked(void)
 
     bzm_parser_realign_result_t parser_realign_result = BZM_PARSER_REALIGN_CLEAN;
     uint32_t parser_realign_discarded = 0;
-#ifdef CONFIG_BZM_1002_STAGE7_ALLOW_PARSER_REALIGN
     if (input.holding && input.reached_stage == BZM_STAGE_RUNNING && input.parser_stats_available && RUNTIME.parser_realign_valid) {
         parser_realign_result = bzm_parser_realign_observe(
-            &RUNTIME.parser_realign, &input.parser_current, CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_MAX_DISCARDS,
-            CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_CLEAN_WINDOWS, CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_MAX_WINDOWS,
-            CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_MAX_EVENTS);
+            &RUNTIME.parser_realign, &input.parser_current, CONFIG_BZM_1002_PARSER_REALIGN_MAX_DISCARDS,
+            CONFIG_BZM_1002_PARSER_REALIGN_CLEAN_WINDOWS, CONFIG_BZM_1002_PARSER_REALIGN_MAX_WINDOWS,
+            CONFIG_BZM_1002_PARSER_REALIGN_MAX_EVENTS);
         if (RUNTIME.parser_realign.recovering || parser_realign_result == BZM_PARSER_REALIGN_RECOVERED) {
             parser_realign_discarded = input.parser_current.discarded_bytes - RUNTIME.parser_realign.burst_discard_baseline;
         }
@@ -402,29 +481,49 @@ static bzm_runtime_health_result_t sample_runtime_health_locked(void)
         }
         if (parser_realign_result == BZM_PARSER_REALIGN_RECOVERED) {
             RUNTIME.parser_baseline = RUNTIME.parser_realign.accepted;
-            ESP_LOGW(TAG, "Stage 7 parser realigned after %lu discarded bytes; valid frame resumed and %u clean windows passed",
-                     (unsigned long) parser_realign_discarded, (unsigned) CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_CLEAN_WINDOWS);
+            RUNTIME.parser_recovery_count++;
+            ESP_LOGW(TAG, "Mining parser realigned after %lu discarded bytes; valid frame resumed and %u clean windows passed",
+                     (unsigned long) parser_realign_discarded, (unsigned) CONFIG_BZM_1002_PARSER_REALIGN_CLEAN_WINDOWS);
         }
     }
-#endif
 
     if (input.holding && input.reached_stage >= BZM_STAGE_SENSORS) {
         input.telemetry_now_us = (uint64_t) esp_timer_get_time();
         input.telemetry_available = BZM_get_telemetry_snapshot(&input.telemetry);
+        if (input.telemetry_available) {
+            float temperature_sum = 0.0f;
+            uint8_t temperature_count = 0;
+            for (uint8_t index = 0; index < BZM_BRINGUP_ASIC_COUNT; ++index) {
+                const bzm_telemetry_sample_t *sample =
+                    bzm_telemetry_store_get(&input.telemetry,
+                                            bzm_asic_wire_ids[index]);
+                if (sample != NULL && isfinite(sample->temperature_c)) {
+                    temperature_sum += sample->temperature_c;
+                    temperature_count++;
+                }
+            }
+            if (temperature_count != 0) {
+                RUNTIME.board_temperature_c =
+                    temperature_sum / temperature_count;
+            }
+        }
     }
+
+    RUNTIME.parser_sample = input.parser_current;
+    RUNTIME.parser_sample_valid = input.parser_stats_available;
 
     RUNTIME.health = bzm_runtime_health_evaluate(&input);
     if (RUNTIME.health.status == BZM_RUNTIME_HEALTH_GOOD && parser_realign_result == BZM_PARSER_REALIGN_PENDING) {
         snprintf(RUNTIME.health.detail, sizeof(RUNTIME.health.detail),
-                 "Stage 7 parser realignment pending: discarded=%lu/%u bursts=%u/%u cleanWindows=%u/%u windows=%u/%u",
-                 (unsigned long) parser_realign_discarded, (unsigned) CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_MAX_DISCARDS,
+                 "Mining parser realignment pending: discarded=%lu/%u bursts=%u/%u cleanWindows=%u/%u windows=%u/%u",
+                 (unsigned long) parser_realign_discarded, (unsigned) CONFIG_BZM_1002_PARSER_REALIGN_MAX_DISCARDS,
                  (unsigned) RUNTIME.parser_realign.episode_bursts,
-                 (unsigned) CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_MAX_EVENTS,
-                 (unsigned) RUNTIME.parser_realign.clean_windows, (unsigned) CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_CLEAN_WINDOWS,
-                 (unsigned) RUNTIME.parser_realign.observed_windows, (unsigned) CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_MAX_WINDOWS);
+                 (unsigned) CONFIG_BZM_1002_PARSER_REALIGN_MAX_EVENTS,
+                 (unsigned) RUNTIME.parser_realign.clean_windows, (unsigned) CONFIG_BZM_1002_PARSER_REALIGN_CLEAN_WINDOWS,
+                 (unsigned) RUNTIME.parser_realign.observed_windows, (unsigned) CONFIG_BZM_1002_PARSER_REALIGN_MAX_WINDOWS);
     } else if (RUNTIME.health.status == BZM_RUNTIME_HEALTH_GOOD && parser_realign_result == BZM_PARSER_REALIGN_RECOVERED) {
         snprintf(RUNTIME.health.detail, sizeof(RUNTIME.health.detail),
-                 "Stage 7 parser realigned: discarded=%lu valid frame resumed cleanWindows=%u",
+                 "Mining parser realigned: discarded=%lu valid frame resumed cleanWindows=%u",
                  (unsigned long) parser_realign_discarded, (unsigned) RUNTIME.parser_realign.clean_windows);
     }
     if (RUNTIME.health.status == BZM_RUNTIME_HEALTH_GOOD && input.holding && input.reached_stage >= BZM_STAGE_CLOCKS &&
@@ -486,19 +585,8 @@ static bzm_runtime_health_result_t sample_runtime_health_locked(void)
     }
     RUNTIME.health_valid = true;
     RUNTIME.health_sampled_at_ms = now_ms();
+    publish_driver_health_locked(current_lifecycle_locked());
     return RUNTIME.health;
-}
-
-static bool bridge_update_acquire(void * context)
-{
-    (void) context;
-    return bzm_validation_runtime_acquire_maintenance(BZM_SUPERVISOR_OWNER_BRIDGE_UPDATE);
-}
-
-static bool bridge_update_release(void * context)
-{
-    (void) context;
-    return bzm_validation_runtime_release_maintenance(BZM_SUPERVISOR_OWNER_BRIDGE_UPDATE);
 }
 
 static bool bridge_status_runtime_good(const bzm_bridge_safety_status_t * status)
@@ -506,6 +594,18 @@ static bool bridge_status_runtime_good(const bzm_bridge_safety_status_t * status
     return status != NULL && status->valid && status->fault == BZM_BRIDGE_SAFETY_FAULT_NONE && !status->trip_input_asserted &&
            (status->runtime_verdict == BZM_BRIDGE_SAFETY_RUNTIME_GOOD_SAFE_OFF ||
             status->runtime_verdict == BZM_BRIDGE_SAFETY_RUNTIME_GOOD_CONTROLLED);
+}
+
+static bool bridge_control_contract_compatible(
+    const bzm_bridge_safety_status_t *status)
+{
+    const uint16_t required = BZM_BRIDGE_SAFETY_CAP_5V_CONTROL |
+                              BZM_BRIDGE_SAFETY_CAP_ASIC_RESET_CONTROL |
+                              BZM_BRIDGE_SAFETY_CAP_FAN_FORCE_FULL |
+                              BZM_BRIDGE_SAFETY_CAP_TRIP_INPUT_SAMPLED;
+    return bridge_status_runtime_good(status) &&
+           status->stage == BZM_BRIDGE_SAFETY_STAGE_TRIP_LATCH &&
+           (status->capabilities & required) == required;
 }
 
 static bool bridge_has_independent_kill(const bzm_bridge_safety_status_t * status)
@@ -603,10 +703,11 @@ static bzm_stage_result_t run_controls(GlobalState * state)
     }
     RUNTIME.bridge_info_valid = true;
 
-    if (BZM_bridge_get_safety_status(&status) != ESP_OK || !status.valid || status.stage < BZM_BRIDGE_SAFETY_STAGE_LEASE ||
-        status.state != BZM_BRIDGE_SAFETY_STATE_SAFE_OFF || !bridge_status_runtime_good(&status)) {
+    if (BZM_bridge_get_safety_status(&status) != ESP_OK || !status.valid ||
+        status.state != BZM_BRIDGE_SAFETY_STATE_SAFE_OFF ||
+        !bridge_control_contract_compatible(&status)) {
         return bzm_validation_result(BZM_CHECK_BAD, BZM_VALIDATION_CODE_STAGE_FAILED,
-                                     "bridge safety status is missing, unsafe, faulted, or lacks a lease watchdog");
+                                     "bridge is unsafe, incompatible, or lacks required lease/trip control paths");
     }
     if (BZM_bridge_arm_safety(&status) != ESP_OK || status.state != BZM_BRIDGE_SAFETY_STATE_CONTROLLED ||
         status.lease_remaining_ms == 0 || BZM_bridge_safety_heartbeat(&status) != ESP_OK ||
@@ -772,13 +873,13 @@ static bzm_stage_result_t run_sensors(void)
     bzm_bringup_report_t report;
     bzm_bringup_outcome_t outcome = BZM_staged_sensors(&profile, &policy, &report);
     if (outcome == BZM_BRINGUP_GOOD) {
-        /* Stage 4 starts the four TDM transmitters together and then proves a
+        /* Telemetry startup begins the four TDM transmitters together and proves a
          * full clean parser interval after any bounded activation residue.
          * Runtime monitoring begins at that accepted boundary. */
         RUNTIME.parser_baseline_valid = BZM_staged_get_sensor_parser_baseline(&RUNTIME.parser_baseline);
         if (!RUNTIME.parser_baseline_valid) {
             return bzm_validation_result(BZM_CHECK_BAD, BZM_VALIDATION_CODE_STAGE_FAILED,
-                                         "Stage-4 accepted parser baseline is unavailable");
+                                         "telemetry startup parser baseline is unavailable");
         }
     }
     return bringup_stage_result("SENSORS", outcome, &report);
@@ -800,14 +901,14 @@ static bzm_stage_result_t run_balanced_ramp(void)
     bzm_bringup_report_t report;
     bzm_bringup_outcome_t outcome = BZM_staged_balanced_ramp(&policy, &report);
     if (outcome == BZM_BRINGUP_GOOD) {
-        /* Stage 6 deliberately pauses/resumes TDM and proves those transition
+        /* Engine activation deliberately pauses/resumes TDM and proves those transition
          * discards separately from every clean engine window. Start runtime
-         * parser monitoring at that accepted boundary; retaining the Stage-3
-         * baseline would misclassify proven Stage-6 traffic as a live fault. */
+         * parser monitoring at that accepted boundary so proven transition
+         * traffic is not misclassified as a live fault. */
         RUNTIME.parser_baseline_valid = BZM_staged_get_parser_baseline(&RUNTIME.parser_baseline);
         if (!RUNTIME.parser_baseline_valid) {
             return bzm_validation_result(BZM_CHECK_BAD, BZM_VALIDATION_CODE_STAGE_FAILED,
-                                         "Stage-6 accepted parser baseline is unavailable");
+                                         "engine activation parser baseline is unavailable");
         }
     }
     return bringup_stage_result("BALANCED_RAMP", outcome, &report);
@@ -815,11 +916,6 @@ static bzm_stage_result_t run_balanced_ramp(void)
 
 static bzm_stage_result_t run_running(GlobalState * state)
 {
-#ifndef CONFIG_BZM_1002_STAGE7_MINING
-    (void) state;
-    return bzm_validation_result(BZM_CHECK_BLOCKED, BZM_VALIDATION_CODE_NOT_IMPLEMENTED,
-                                 "CONFIG_BZM_1002_STAGE7_MINING is disabled");
-#else
     if (!RUNTIME.mining_stack_ready) {
         return bzm_validation_result(BZM_CHECK_BLOCKED, BZM_VALIDATION_CODE_PREREQUISITE_FAILED,
                                      "network mining queue is not initialized yet");
@@ -831,25 +927,20 @@ static bzm_stage_result_t run_running(GlobalState * state)
         RUNTIME.parser_baseline_valid = BZM_staged_get_running_parser_baseline(&RUNTIME.parser_baseline);
         if (!RUNTIME.parser_baseline_valid) {
             return bzm_validation_result(BZM_CHECK_BAD, BZM_VALIDATION_CODE_STAGE_FAILED,
-                                         "Stage-7 quiet parser baseline is unavailable");
+                                         "pre-mining quiet parser baseline is unavailable");
         }
-#ifdef CONFIG_BZM_1002_STAGE7_ALLOW_PARSER_REALIGN
         bzm_parser_realign_init(&RUNTIME.parser_realign, &RUNTIME.parser_baseline);
         RUNTIME.parser_realign_valid = RUNTIME.parser_realign.initialized;
         if (!RUNTIME.parser_realign_valid) {
             return bzm_validation_result(BZM_CHECK_BAD, BZM_VALIDATION_CODE_STAGE_FAILED,
-                                         "Stage-7 parser realignment baseline is unavailable");
+                                         "mining parser realignment baseline is unavailable");
         }
-#else
-        RUNTIME.parser_realign_valid = false;
-#endif
     }
     if (outcome == BZM_BRINGUP_GOOD && !BZM_running_stats_snapshot(&RUNTIME.running_evidence_baseline)) {
         return bzm_validation_result(BZM_CHECK_BAD, BZM_VALIDATION_CODE_STAGE_FAILED,
-                                     "Stage-7 driver evidence baseline is unavailable");
+                                     "mining driver evidence baseline is unavailable");
     }
     return bringup_stage_result("RUNNING", outcome, &report);
-#endif
 }
 
 static bzm_stage_result_t runtime_run_stage(void * context, bzm_validation_stage_t stage)
@@ -857,7 +948,7 @@ static bzm_stage_result_t runtime_run_stage(void * context, bzm_validation_stage
     GlobalState * state = context;
     if (stage >= BZM_STAGE_POWER_RAIL && !runtime_execution_authorizer(&RUNTIME)) {
         return bzm_validation_result(BZM_CHECK_BAD, BZM_VALIDATION_CODE_STAGE_FAILED,
-                                     "powered validation execution lease expired before stage entry");
+                                     "startup watchdog expired before step entry");
     }
     bzm_stage_result_t result;
     switch (stage) {
@@ -886,11 +977,11 @@ static bzm_stage_result_t runtime_run_stage(void * context, bzm_validation_stage
         break;
     default:
         return bzm_validation_result(BZM_CHECK_BLOCKED, BZM_VALIDATION_CODE_INVALID_CONFIGURATION,
-                                     "unknown Bonanza validation stage");
+                                     "unknown Bonanza startup step");
     }
     if (stage >= BZM_STAGE_POWER_RAIL && !runtime_execution_authorizer(&RUNTIME)) {
         return bzm_validation_result(BZM_CHECK_BAD, BZM_VALIDATION_CODE_STAGE_FAILED,
-                                     "powered validation execution lease expired during stage");
+                                     "startup watchdog expired during step");
     }
     return result;
 }
@@ -917,7 +1008,7 @@ static void runtime_monitor_task(void * parameter)
             close_dispatch_locked();
         }
         if (!bzm_supervisor_tick(&RUNTIME.supervisor, current_ms)) {
-            ESP_LOGE(TAG, "local controller lease expired; safe-off requested");
+            ESP_LOGE(TAG, "local controller watchdog expired; safe-off requested");
         }
 
         bool holding = runtime_is_holding_locked();
@@ -968,7 +1059,7 @@ static void runtime_monitor_task(void * parameter)
     }
 }
 
-esp_err_t bzm_validation_runtime_init(GlobalState * global_state)
+esp_err_t bzm_controller_init(GlobalState * global_state)
 {
     if (global_state == NULL)
         return ESP_ERR_INVALID_ARG;
@@ -984,7 +1075,6 @@ esp_err_t bzm_validation_runtime_init(GlobalState * global_state)
     RUNTIME.global_state = global_state;
     RUNTIME.active = true;
     reset_running_evidence_locked(false);
-    bzm_local_arm_init(&RUNTIME.local_arm);
     bzm_ch2_confirmation_init(&RUNTIME.ch2_confirmation);
     bzm_pll_lock_confirmation_init(&RUNTIME.pll_lock_confirmation);
     atomic_init(&RUNTIME.dispatch_enabled, false);
@@ -997,30 +1087,14 @@ esp_err_t bzm_validation_runtime_init(GlobalState * global_state)
         .force_safe_off = runtime_force_safe_off,
     };
     bzm_supervisor_config_t config = {
-        .build_max_stage = (bzm_validation_stage_t) CONFIG_BZM_1002_MAX_STAGE,
+        .build_max_stage = BZM_STAGE_RUNNING,
         .implemented_max_stage = BZM_STAGE_RUNNING,
-#ifdef CONFIG_BZM_1002_POWERED_VALIDATION
         .powered_stages_compiled = true,
-#else
-        .powered_stages_compiled = false,
-#endif
-#ifdef CONFIG_BZM_1002_LAB_VALIDATION
-        .production_mode = false,
-#else
         .production_mode = true,
-#endif
         .independent_kill_available = false,
-#ifdef CONFIG_BZM_1002_ALLOW_ESP_ONLY_KILL_IN_LAB
-        .allow_esp_only_kill_in_lab = true,
-#else
         .allow_esp_only_kill_in_lab = false,
-#endif
-#ifdef CONFIG_BZM_1002_BOARD_MANAGED_SAFETY
         .board_managed_safety = true,
-#else
-        .board_managed_safety = false,
-#endif
-        .maximum_lease_ms = (uint32_t) CONFIG_BZM_1002_MAX_LEASE_SECONDS * 1000U,
+        .maximum_lease_ms = BZM_CONTROLLER_WATCHDOG_MS,
     };
     if (!bzm_supervisor_init(&RUNTIME.supervisor, &config, &ops, global_state)) {
         pthread_mutex_unlock(&RUNTIME.lock);
@@ -1028,13 +1102,10 @@ esp_err_t bzm_validation_runtime_init(GlobalState * global_state)
     }
     RUNTIME.initialized = true;
     STRATUM_V1_set_restart_guard(runtime_restart_guard, NULL);
-    if (!BZM_bridge_update_set_maintenance_hooks(bridge_update_acquire, bridge_update_release, NULL)) {
-        RUNTIME.initialized = false;
-        pthread_mutex_unlock(&RUNTIME.lock);
-        return ESP_ERR_INVALID_STATE;
-    }
     refresh_bridge_evidence_locked();
     bool safe = bzm_supervisor_request_validation(&RUNTIME.supervisor, BZM_STAGE_OFF_SAFE, false, false, 0, now_ms());
+    publish_driver_health_locked(safe ? ASIC_DRIVER_SAFE_OFF
+                                      : ASIC_DRIVER_FAULT);
     pthread_mutex_unlock(&RUNTIME.lock);
     if (!safe)
         return ESP_FAIL;
@@ -1053,7 +1124,7 @@ esp_err_t bzm_validation_runtime_init(GlobalState * global_state)
     return ESP_OK;
 }
 
-bool bzm_validation_runtime_mining_stack_ready(void)
+bool bzm_controller_mining_stack_ready(void)
 {
     pthread_mutex_lock(&RUNTIME.lock);
     bool started = false;
@@ -1070,7 +1141,7 @@ bool bzm_validation_runtime_mining_stack_ready(void)
     return started;
 }
 
-bool bzm_validation_runtime_active(void)
+bool bzm_controller_active(void)
 {
     pthread_mutex_lock(&RUNTIME.lock);
     bool active = RUNTIME.active;
@@ -1078,232 +1149,22 @@ bool bzm_validation_runtime_active(void)
     return active;
 }
 
-bzm_runtime_gate_result_t bzm_validation_runtime_request(bzm_validation_stage_t target_stage, bool hold_after_success,
-                                                         uint32_t lease_ms, const char * confirmation)
-{
-    pthread_mutex_lock(&RUNTIME.lock);
-    if (!RUNTIME.initialized) {
-        pthread_mutex_unlock(&RUNTIME.lock);
-        return BZM_RUNTIME_GATE_INVALID_STAGE;
-    }
-    refresh_bridge_evidence_locked();
-    bzm_runtime_gate_t gate = {
-        .build_max_stage = RUNTIME.supervisor.config.build_max_stage,
-        .powered_stages_compiled = RUNTIME.supervisor.config.powered_stages_compiled,
-        .maximum_lease_ms = RUNTIME.supervisor.config.maximum_lease_ms,
-        .busy = RUNTIME.supervisor.owner != BZM_SUPERVISOR_OWNER_NONE,
-        .fault_latched = RUNTIME.supervisor.fault_latched,
-    };
-    bzm_runtime_request_t request = {
-        .target_stage = target_stage,
-        .hold_after_success = hold_after_success,
-        .lease_ms = lease_ms,
-        .confirmation_valid = confirmation != NULL && strcmp(confirmation, BZM_RUNTIME_POWER_CONFIRMATION) == 0,
-#ifdef CONFIG_BZM_1002_USB_SERIAL_ARM
-        .local_arm_present = false,
-#else
-        .local_arm_present = gpio_get_level(CONFIG_GPIO_BUTTON_BOOT) == 0,
-#endif
-    };
-#ifdef CONFIG_BZM_1002_USB_SERIAL_ARM
-    RUNTIME.last_gate_result = bzm_runtime_validate_request_with_local_arm(&gate, &request, &RUNTIME.local_arm, now_ms());
-#else
-    RUNTIME.last_gate_result = bzm_runtime_validate_request(&gate, &request);
-#endif
-    if (RUNTIME.last_gate_result == BZM_RUNTIME_GATE_ACCEPTED) {
-        close_dispatch_locked();
-        RUNTIME.parser_realign_valid = false;
-        reset_running_evidence_locked(target_stage == BZM_STAGE_RUNNING);
-        bzm_ch2_confirmation_init(&RUNTIME.ch2_confirmation);
-        bzm_pll_lock_confirmation_init(&RUNTIME.pll_lock_confirmation);
-        uint64_t request_now_ms = now_ms();
-        uint64_t execution_deadline_ms = 0;
-        if (target_stage >= BZM_STAGE_POWER_RAIL &&
-            !bzm_lease_guard_make_deadline(request_now_ms, lease_ms, &execution_deadline_ms)) {
-            RUNTIME.last_gate_result = BZM_RUNTIME_GATE_LEASE_TOO_LONG;
-            pthread_mutex_unlock(&RUNTIME.lock);
-            return RUNTIME.last_gate_result;
-        }
-        atomic_store_explicit(&RUNTIME.execution_deadline_ms, execution_deadline_ms, memory_order_release);
-        bool completed = bzm_supervisor_request_validation(&RUNTIME.supervisor, target_stage, request.local_arm_present,
-                                                           hold_after_success, lease_ms, request_now_ms);
-        atomic_store_explicit(&RUNTIME.execution_deadline_ms, 0, memory_order_release);
-        if (completed && runtime_is_holding_locked()) {
-            bzm_runtime_health_result_t health = sample_runtime_health_locked();
-            if (health.status == BZM_RUNTIME_HEALTH_BAD) {
-                close_dispatch_locked();
-                (void) bzm_supervisor_latch_fault(&RUNTIME.supervisor, (uint32_t) health.fault, health.detail);
-                completed = false;
-            }
-        }
-        if (completed && RUNTIME.supervisor.owner == BZM_SUPERVISOR_OWNER_MINING) {
-            if (!start_mining_tasks_locked()) {
-                (void) bzm_supervisor_latch_fault(&RUNTIME.supervisor, 0x1006, "mining task stack could not start");
-            } else {
-                RUNTIME.running_evidence_started_at_ms = now_ms();
-                RUNTIME.running_evidence_monitoring = true;
-                RUNTIME.global_state->ASIC_initalized = true;
-                RUNTIME.global_state->SYSTEM_MODULE.mining_paused = false;
-                (void) evaluate_running_evidence_locked(RUNTIME.running_evidence_started_at_ms);
-            }
-        }
-        sync_dispatch_locked();
-    }
-    bzm_runtime_gate_result_t result = RUNTIME.last_gate_result;
-    pthread_mutex_unlock(&RUNTIME.lock);
-    return result;
-}
-
-bool bzm_validation_runtime_heartbeat(uint32_t lease_ms)
-{
-    pthread_mutex_lock(&RUNTIME.lock);
-    bool ok = bzm_supervisor_heartbeat(&RUNTIME.supervisor, lease_ms, now_ms());
-    sync_dispatch_locked();
-    pthread_mutex_unlock(&RUNTIME.lock);
-    return ok;
-}
-
-bzm_runtime_stop_result_t bzm_validation_runtime_stop(const char * reason)
-{
-    pthread_mutex_lock(&RUNTIME.lock);
-    if (!RUNTIME.initialized) {
-        pthread_mutex_unlock(&RUNTIME.lock);
-        return BZM_RUNTIME_STOP_UNAVAILABLE;
-    }
-    if (bzm_supervisor_owner_is_maintenance(RUNTIME.supervisor.owner)) {
-        pthread_mutex_unlock(&RUNTIME.lock);
-        return BZM_RUNTIME_STOP_CONFLICT;
-    }
-    close_dispatch_locked();
-    bzm_local_arm_init(&RUNTIME.local_arm);
-    bzm_ch2_confirmation_init(&RUNTIME.ch2_confirmation);
-    bzm_pll_lock_confirmation_init(&RUNTIME.pll_lock_confirmation);
-    bool ok = bzm_supervisor_stop(&RUNTIME.supervisor, reason != NULL ? reason : "operator stop");
-    sync_dispatch_locked();
-    pthread_mutex_unlock(&RUNTIME.lock);
-    return ok ? BZM_RUNTIME_STOPPED : BZM_RUNTIME_STOP_SAFE_OFF_FAILED;
-}
-
-bool bzm_validation_runtime_clear_fault(void)
-{
-    pthread_mutex_lock(&RUNTIME.lock);
-    if (!RUNTIME.initialized || !RUNTIME.supervisor.fault_latched) {
-        pthread_mutex_unlock(&RUNTIME.lock);
-        return false;
-    }
-    close_dispatch_locked();
-    bzm_local_arm_init(&RUNTIME.local_arm);
-    bzm_ch2_confirmation_init(&RUNTIME.ch2_confirmation);
-    bzm_pll_lock_confirmation_init(&RUNTIME.pll_lock_confirmation);
-    /* The first OFF_SAFE request always issues the shutdown commands, but a
-     * correctly latched bridge fault makes its final verdict BAD until the
-     * explicit clear command runs. Prove the electrical rail and physical
-     * bridge outputs safe without requiring the impossible pre-clear GOOD
-     * verdict, then clear and re-run the complete OFF_SAFE proof. */
-    (void) bzm_supervisor_request_validation(&RUNTIME.supervisor, BZM_STAGE_OFF_SAFE, false, false, 0, now_ms());
-    TPS546_StatusSnapshot power = {0};
-    bool pgood = true;
-    bool electrical_safe = VCORE_bzm_snapshot(&power, &pgood) == ESP_OK && !pgood && (power.operation & OPERATION_ON) == 0 &&
-                           power.read_vout * 1000.0f <= (float) CONFIG_BZM_1002_SAFE_OFF_VCORE_MV;
-    bzm_bridge_safety_status_t status;
-    bool physical_bridge_safe =
-        BZM_bridge_get_safety_status(&status) == ESP_OK && bzm_bridge_safety_status_allows_fault_clear(&status);
-    bool bridge_clear = electrical_safe && physical_bridge_safe && BZM_bridge_clear_safety_fault(&status) == ESP_OK &&
-                        status.valid && status.state == BZM_BRIDGE_SAFETY_STATE_SAFE_OFF;
-    bool reproved =
-        bridge_clear && bzm_supervisor_request_validation(&RUNTIME.supervisor, BZM_STAGE_OFF_SAFE, false, false, 0, now_ms());
-    bool cleared = reproved && bzm_supervisor_clear_fault(&RUNTIME.supervisor);
-    sync_dispatch_locked();
-    pthread_mutex_unlock(&RUNTIME.lock);
-    return cleared;
-}
-
-bzm_local_arm_result_t bzm_validation_runtime_arm_local(const char * confirmation, uint32_t * remaining_ms)
-{
-    if (remaining_ms != NULL)
-        *remaining_ms = 0;
-#ifdef CONFIG_BZM_1002_USB_SERIAL_ARM
-    pthread_mutex_lock(&RUNTIME.lock);
-    bool off_safe = RUNTIME.initialized && RUNTIME.supervisor.owner == BZM_SUPERVISOR_OWNER_NONE &&
-                    !RUNTIME.supervisor.fault_latched && RUNTIME.supervisor.report.state == BZM_VALIDATION_OFF_SAFE &&
-                    !RUNTIME.supervisor.report.energized && RUNTIME.supervisor.report.final_safe_off.status == BZM_CHECK_GOOD;
-    if (!off_safe) {
-        pthread_mutex_unlock(&RUNTIME.lock);
-        return BZM_LOCAL_ARM_INVALID_ARGUMENT;
-    }
-
-    uint64_t current_ms = now_ms();
-    uint32_t window_ms = (uint32_t) CONFIG_BZM_1002_USB_SERIAL_ARM_WINDOW_SECONDS * 1000U;
-    bzm_local_arm_result_t result =
-        bzm_local_arm_issue(&RUNTIME.local_arm, confirmation, BZM_RUNTIME_POWER_CONFIRMATION, current_ms, window_ms);
-    if (result == BZM_LOCAL_ARM_ACCEPTED && remaining_ms != NULL) {
-        *remaining_ms = bzm_local_arm_remaining_ms(&RUNTIME.local_arm, current_ms);
-    }
-    pthread_mutex_unlock(&RUNTIME.lock);
-    return result;
-#else
-    (void) confirmation;
-    return BZM_LOCAL_ARM_INVALID_ARGUMENT;
-#endif
-}
-
-bool bzm_validation_runtime_snapshot(bzm_validation_runtime_snapshot_t * snapshot)
-{
-    if (snapshot == NULL)
-        return false;
-    pthread_mutex_lock(&RUNTIME.lock);
-    memset(snapshot, 0, sizeof(*snapshot));
-    snapshot->active = RUNTIME.active;
-    snapshot->initialized = RUNTIME.initialized;
-    snapshot->monitor_running = RUNTIME.monitor_running;
-    snapshot->last_gate_result = RUNTIME.last_gate_result;
-    if (RUNTIME.initialized) {
-        snapshot->config = RUNTIME.supervisor.config;
-        snapshot->report = RUNTIME.supervisor.report;
-        snapshot->owner = RUNTIME.supervisor.owner;
-        snapshot->lease_deadline_ms = RUNTIME.supervisor.lease_deadline_ms;
-        snapshot->fault_code = RUNTIME.supervisor.fault_code;
-        snprintf(snapshot->fault_detail, sizeof(snapshot->fault_detail), "%s", RUNTIME.supervisor.fault_detail);
-    }
-    snapshot->bridge_info_valid = RUNTIME.bridge_info_valid;
-    snapshot->bridge_info = RUNTIME.bridge_info;
-    snapshot->bridge_status_valid = RUNTIME.bridge_status_valid;
-    snapshot->bridge_status = RUNTIME.bridge_status;
-    snapshot->fan_rpm = RUNTIME.fan_rpm;
-    snapshot->health_valid = RUNTIME.health_valid;
-    snapshot->health_sampled_at_ms = RUNTIME.health_sampled_at_ms;
-    snapshot->health = RUNTIME.health;
-    snapshot->running_evidence_requested = RUNTIME.running_evidence_requested;
-    snapshot->running_evidence_monitoring = RUNTIME.running_evidence_monitoring;
-    snapshot->running_evidence_started_at_ms = RUNTIME.running_evidence_started_at_ms;
-    snapshot->running_evidence_config = running_evidence_config();
-    snapshot->running_evidence = RUNTIME.running_evidence;
-#ifdef CONFIG_BZM_1002_USB_SERIAL_ARM
-    snapshot->usb_serial_arm_enabled = true;
-    snapshot->local_arm_window_ms = (uint32_t) CONFIG_BZM_1002_USB_SERIAL_ARM_WINDOW_SECONDS * 1000U;
-    snapshot->local_arm_remaining_ms = bzm_local_arm_remaining_ms(&RUNTIME.local_arm, now_ms());
-#endif
-    pthread_mutex_unlock(&RUNTIME.lock);
-    return snapshot->active;
-}
-
-bool bzm_validation_runtime_dispatch_allowed(void)
+bool bzm_controller_dispatch_allowed(void)
 {
     return runtime_dispatch_authorizer(&RUNTIME);
 }
 
-bool bzm_validation_runtime_acquire_maintenance(bzm_supervisor_owner_t owner)
+bool bzm_controller_acquire_maintenance(bzm_supervisor_owner_t owner)
 {
     pthread_mutex_lock(&RUNTIME.lock);
     close_dispatch_locked();
-    bzm_local_arm_init(&RUNTIME.local_arm);
     bool ok = RUNTIME.initialized && bzm_supervisor_acquire_maintenance(&RUNTIME.supervisor, owner, now_ms());
     sync_dispatch_locked();
     pthread_mutex_unlock(&RUNTIME.lock);
     return ok;
 }
 
-bool bzm_validation_runtime_release_maintenance(bzm_supervisor_owner_t owner)
+bool bzm_controller_release_maintenance(bzm_supervisor_owner_t owner)
 {
     pthread_mutex_lock(&RUNTIME.lock);
     close_dispatch_locked();
@@ -1313,7 +1174,7 @@ bool bzm_validation_runtime_release_maintenance(bzm_supervisor_owner_t owner)
     return ok;
 }
 
-bool bzm_validation_runtime_prepare_restart(void)
+bool bzm_controller_prepare_restart(void)
 {
     pthread_mutex_lock(&RUNTIME.lock);
     if (!RUNTIME.active) {
@@ -1322,7 +1183,6 @@ bool bzm_validation_runtime_prepare_restart(void)
     }
 
     close_dispatch_locked();
-    bzm_local_arm_init(&RUNTIME.local_arm);
     bool ok = RUNTIME.initialized && bzm_supervisor_prepare_restart(&RUNTIME.supervisor);
     sync_dispatch_locked();
     pthread_mutex_unlock(&RUNTIME.lock);

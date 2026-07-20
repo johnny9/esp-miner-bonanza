@@ -126,6 +126,8 @@ static const asic_driver_t DRIVERS[] = {
             .send_work = BZM_send_work,
             .clear_work = BZM_clear_work,
             .read_temperature = BZM_read_temperature,
+            .record_local_result = BZM_record_local_result,
+            .health_snapshot = BZM_driver_health_snapshot,
         },
     },
 };
@@ -146,4 +148,22 @@ size_t asic_driver_count(void)
 const asic_driver_t *asic_driver_at(size_t index)
 {
     return index < asic_driver_count() ? &DRIVERS[index] : NULL;
+}
+
+const char *asic_driver_lifecycle_name(asic_driver_lifecycle_t lifecycle)
+{
+    switch (lifecycle) {
+    case ASIC_DRIVER_SAFE_OFF:
+        return "SAFE_OFF";
+    case ASIC_DRIVER_STARTING:
+        return "STARTING";
+    case ASIC_DRIVER_MINING:
+        return "MINING";
+    case ASIC_DRIVER_FAULT:
+        return "FAULT";
+    case ASIC_DRIVER_MAINTENANCE:
+        return "MAINTENANCE";
+    default:
+        return "UNKNOWN";
+    }
 }

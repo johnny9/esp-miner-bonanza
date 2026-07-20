@@ -228,6 +228,7 @@ TEST_CASE("Job store snapshots own metadata and generated handles reject reuse",
     asic_work_handle_t old_handle;
     TEST_ASSERT_TRUE(asic_job_store_store_generated(
         store, &original, &old_handle));
+    TEST_ASSERT_TRUE(asic_job_store_contains(store, old_handle));
 
     mining_template_t snapshot;
     TEST_ASSERT_TRUE(asic_job_store_snapshot(store, old_handle, &snapshot));
@@ -244,6 +245,7 @@ TEST_CASE("Job store snapshots own metadata and generated handles reject reuse",
         mining_template_free(&replacement);
     }
     TEST_ASSERT_FALSE(asic_job_store_snapshot(store, old_handle, &snapshot));
+    TEST_ASSERT_FALSE(asic_job_store_contains(store, old_handle));
     asic_job_store_invalidate_all(store);
     TEST_ASSERT_FALSE(asic_job_store_snapshot(store, old_handle, &snapshot));
     delete_store(store);
@@ -485,8 +487,12 @@ TEST_CASE("ASIC driver table exposes operations without switch dispatch",
         TEST_ASSERT_NOT_NULL(driver->ops.send_work);
         if (driver->id == BZM) {
             TEST_ASSERT_NOT_NULL(driver->ops.clear_work);
+            TEST_ASSERT_NOT_NULL(driver->ops.record_local_result);
+            TEST_ASSERT_NOT_NULL(driver->ops.health_snapshot);
         } else {
             TEST_ASSERT_NULL(driver->ops.clear_work);
+            TEST_ASSERT_NULL(driver->ops.record_local_result);
+            TEST_ASSERT_NULL(driver->ops.health_snapshot);
         }
     }
     TEST_ASSERT_NULL(asic_driver_for_id(99));

@@ -5,6 +5,7 @@
 #include "asic_driver.h"
 #include "device_config.h"
 #include "frequency_transition_bmXX.h"
+#include <string.h>
 
 static const char *TAG = "asic";
 
@@ -128,4 +129,22 @@ float ASIC_get_temperature(GlobalState *state)
     const asic_driver_t *driver = active_driver(state);
     if (driver == NULL || driver->ops.read_temperature == NULL) return -1.0f;
     return driver->ops.read_temperature(state);
+}
+
+void ASIC_record_local_result(GlobalState *state, bool valid,
+                              double nonce_difficulty)
+{
+    const asic_driver_t *driver = active_driver(state);
+    if (driver != NULL && driver->ops.record_local_result != NULL) {
+        driver->ops.record_local_result(state, valid, nonce_difficulty);
+    }
+}
+
+bool ASIC_get_health(GlobalState *state, asic_driver_health_t *health)
+{
+    if (health == NULL) return false;
+    memset(health, 0, sizeof(*health));
+    const asic_driver_t *driver = active_driver(state);
+    return driver != NULL && driver->ops.health_snapshot != NULL &&
+           driver->ops.health_snapshot(state, health) && health->available;
 }

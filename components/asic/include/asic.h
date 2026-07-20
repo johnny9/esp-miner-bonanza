@@ -5,6 +5,7 @@
 #include "global_state.h"
 #include "asic_common.h"
 #include "asic_capabilities.h"
+#include "asic_driver.h"
 #include "mining.h"
 
 asic_capabilities_t ASIC_get_capabilities(const GlobalState *GLOBAL_STATE);
@@ -24,5 +25,9 @@ void ASIC_set_nonce_space(GlobalState * GLOBAL_STATE);
 double ASIC_get_asic_job_frequency_ms(GlobalState * GLOBAL_STATE);
 void ASIC_read_registers(GlobalState * GLOBAL_STATE);
 float ASIC_get_temperature(GlobalState * GLOBAL_STATE);
+void ASIC_record_local_result(GlobalState *GLOBAL_STATE, bool valid,
+                              double nonce_difficulty);
+bool ASIC_get_health(GlobalState *GLOBAL_STATE,
+                     asic_driver_health_t *health);
 
 #endif // ASIC_H

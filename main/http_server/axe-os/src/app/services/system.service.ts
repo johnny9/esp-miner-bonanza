@@ -10,9 +10,7 @@ import {
   SystemAsic as ISystemASIC,
   SystemScoreboardEntry as ISystemScoreboardEntry,
   Settings,
-  GenericResponse,
-  BridgeInfo,
-  BridgeUpdateStatus
+  GenericResponse
 } from '../generated/models';
 import { Api } from '../generated/api';
 import * as functions from '../generated/functions';
@@ -90,6 +88,7 @@ export class SystemApiService {
         apEnabled: 0,
         sharesAccepted: 1,
         sharesRejected: 10,
+        currentWorkAgeSeconds: 4.2,
         sharesRejectedReasons: [
           { message: "Above target", count: 8 },
           { message: "Duplicate share", count: 2 }
@@ -170,6 +169,37 @@ export class SystemApiService {
         coinbaseValueTotalSatoshis: 50,
         coinbaseValueUserSatoshis: 50,
         miningPaused: false,
+        asicHealth: {
+          lifecycle: 'MINING' as const,
+          stateAgeSeconds: 180,
+          asicCount: 4,
+          expectedAsicCount: 4,
+          activeEngineCount: 944,
+          expectedEngineCount: 944,
+          fixedFrequencyMHz: 800,
+          fixedVoltageMV: 2800,
+          measuredVoltageV: 2.8,
+          boardTemperatureC: 57.3,
+          fanPercent: 100,
+          fanRPM: 4300,
+          bridgeVersion: '1.1.0',
+          bridgeProtocolMajor: 1,
+          bridgeProtocolMinor: 1,
+          bridgeCompatible: true,
+          parserDiscardedBytes: 12,
+          parserRecoveries: 2,
+          mappedResults: 240,
+          locallyValidResults: 220,
+          mappingRejections: 0,
+          localRejections: 0,
+          duplicateResults: 0,
+          dispatchFailures: 0,
+          lastFaultCode: 0,
+          lastFault: '',
+          automaticRetry: false,
+          userActionRequired: false,
+          recommendedAction: '',
+        },
       }
     ).pipe(delay(1000));
   }
@@ -391,55 +421,6 @@ export class SystemApiService {
 
   public performWWWOTAUpdate(file: File | Blob): Observable<HttpEvent<string>> {
     return this.otaUpdate(file, '/api/system/OTAWWW');
-  }
-
-  public getBridgeInfo(): Observable<BridgeInfo> {
-    if (!environment.mock && this.api) {
-      return from(this.api.invoke(functions.getBridgeInfo, {}));
-    }
-    if (!environment.mock) {
-      return this.httpClient.get<BridgeInfo>('/api/system/bridge');
-    }
-    return of({
-      available: true,
-      versionQuerySupported: true,
-      version: '0.0.1+gabcdef',
-      protocolMajor: 1,
-      protocolMinor: 0,
-    });
-  }
-
-  public performBridgeUpdate(
-    file: File | Blob
-  ): Observable<HttpEvent<BridgeUpdateStatus>> {
-    return this.httpClient.post<BridgeUpdateStatus>(
-      '/api/system/bridge/firmware', file, {
-        reportProgress: true,
-        observe: 'events',
-        headers: {
-          'Content-Type': 'application/octet-stream',
-        },
-      });
-  }
-
-  public getBridgeFirmwareUpdateStatus(): Observable<BridgeUpdateStatus> {
-    if (!environment.mock && this.api) {
-      return from(this.api.invoke(
-        functions.getBridgeFirmwareUpdateStatus, {}));
-    }
-    if (!environment.mock) {
-      return this.httpClient.get<BridgeUpdateStatus>(
-        '/api/system/bridge/firmware/status');
-    }
-    return of({
-      state: 'complete',
-      progress: 100,
-      imageSize: 65536,
-      running: false,
-      versionQuerySupported: true,
-      currentVersion: '0.0.1+gabcdef',
-      error: null,
-    });
   }
 
   public getAsicSettings(uri: string = ''): Observable<ISystemASIC> {

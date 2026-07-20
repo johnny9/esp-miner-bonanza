@@ -92,6 +92,18 @@ bool asic_job_store_snapshot(asic_job_store_t *store,
     return found;
 }
 
+bool asic_job_store_contains(asic_job_store_t *store,
+                             asic_work_handle_t handle)
+{
+    if (store == NULL || handle == ASIC_WORK_HANDLE_INVALID) return false;
+    uint8_t slot = (uint8_t)(handle & 0xff);
+    pthread_mutex_lock(&store->lock);
+    const asic_job_store_entry_t *entry = &store->entries[slot];
+    bool found = entry->valid && entry->handle == handle;
+    pthread_mutex_unlock(&store->lock);
+    return found;
+}
+
 bool asic_job_store_release(asic_job_store_t *store,
                             asic_work_handle_t handle)
 {

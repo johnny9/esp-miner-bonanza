@@ -59,17 +59,6 @@ typedef enum
 
 typedef struct
 {
-    bzm_validation_stage_t stage;
-    const char * name;
-    const char * configuration;
-    const char * good_criteria;
-    const char * bad_criteria;
-    bool energizes_asic_rail;
-    bool requires_local_arm;
-} bzm_stage_definition_t;
-
-typedef struct
-{
     bzm_check_status_t status;
     bzm_validation_code_t code;
     char detail[BZM_VALIDATION_DETAIL_LENGTH];
@@ -113,7 +102,6 @@ typedef struct
     bzm_stage_result_t final_safe_off;
 } bzm_validation_report_t;
 
-const bzm_stage_definition_t * bzm_validation_stage_definition(bzm_validation_stage_t stage);
 const char * bzm_validation_stage_name(bzm_validation_stage_t stage);
 const char * bzm_validation_status_name(bzm_check_status_t status);
 const char * bzm_validation_code_name(bzm_validation_code_t code);

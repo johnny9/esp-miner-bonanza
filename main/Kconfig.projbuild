@@ -206,7 +206,7 @@ menu "Bitaxe Configuration"
         config BZM_1002_PLL_LOCK_CONFIRM_SAMPLES
             int "Consecutive combined PLL-lock clears required for shutdown"
             range 1 10
-            default 1
+            default 3
             help
                 Number of consecutive fresh per-ASIC telemetry frames whose
                 unchecksummed combined PLL0/PLL1 lock bit must be clear before

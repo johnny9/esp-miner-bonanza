@@ -112,9 +112,9 @@ class Bitaxe1002ProductionDefaultsValidationTest(unittest.TestCase):
         ):
             validate_production_defaults(path)
 
-    def test_rejects_relaxed_default_pll_lock_confirmation(self):
+    def test_rejects_immediate_default_pll_lock_shutdown(self):
         path = self.write_defaults({
-            "CONFIG_BZM_1002_PLL_LOCK_CONFIRM_SAMPLES": "3",
+            "CONFIG_BZM_1002_PLL_LOCK_CONFIRM_SAMPLES": "1",
         })
         with self.assertRaisesRegex(ValueError, "PLL_LOCK_CONFIRM_SAMPLES"):
             validate_production_defaults(path)

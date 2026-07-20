@@ -696,8 +696,11 @@ esp_netif_t * wifi_init_sta(const char * wifi_ssid, const char * wifi_pass)
         .sta =
             {
                 .threshold.authmode = authmode,
-                .btm_enabled = 1,
-                .rm_enabled = 1,
+                /* Bitaxe is stationary. The 802.11k/v roaming helpers caused
+                 * repeatable reason-1 disconnects on the qualification AP at
+                 * roughly 65-second intervals despite a -23 dBm signal. */
+                .btm_enabled = 0,
+                .rm_enabled = 0,
                 .scan_method = WIFI_ALL_CHANNEL_SCAN,
                 .sort_method = WIFI_CONNECT_AP_BY_SIGNAL,
                 .pmf_cfg =

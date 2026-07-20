@@ -24,6 +24,8 @@
 
 // Maximum number of access points to scan
 #define MAX_AP_COUNT 20
+#define WIFI_RECONNECT_DELAY_MS 1000
+#define WIFI_SOFTAP_FALLBACK_RETRY 3
 
 #if CONFIG_ESP_WPA3_SAE_PWE_HUNT_AND_PECK
 #define ESP_WIFI_SAE_MODE WPA3_SAE_PWE_HUNT_AND_PECK
@@ -59,6 +61,7 @@
 static const char * TAG = "connect";
 
 static TimerHandle_t ip_acquire_timer = NULL;
+static TimerHandle_t wifi_reconnect_timer = NULL;
 
 static bool is_scanning = false;
 static uint16_t ap_number = 0;
@@ -385,6 +388,17 @@ static void ip_timeout_callback(TimerHandle_t xTimer)
     }
 }
 
+static void wifi_reconnect_callback(TimerHandle_t xTimer)
+{
+    (void)xTimer;
+
+    ESP_LOGI(TAG, "Retrying Wi-Fi connection...");
+    esp_err_t err = esp_wifi_connect();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+        ESP_LOGW(TAG, "Wi-Fi reconnect failed to start: %s", esp_err_to_name(err));
+    }
+}
+
 static void event_handler(void * arg, esp_event_base_t event_base, int32_t event_id, void * event_data)
 {
     GlobalState *GLOBAL_STATE = (GlobalState *)arg;
@@ -430,28 +444,36 @@ static void event_handler(void * arg, esp_event_base_t event_base, int32_t event
             }
 
             ESP_LOGI(TAG, "Could not connect to '%.*s' [rssi %d]: reason %d", event->ssid_len, event->ssid, event->rssi, event->reason);
+
+            GLOBAL_STATE->SYSTEM_MODULE.is_connected = false;
+            if (ip_acquire_timer != NULL) {
+                xTimerStop(ip_acquire_timer, 0);
+            }
+
             if (clients_connected_to_ap > 0) {
                 ESP_LOGI(TAG, "Client(s) connected to AP, not retrying...");
                 snprintf(GLOBAL_STATE->SYSTEM_MODULE.wifi_status, sizeof(GLOBAL_STATE->SYSTEM_MODULE.wifi_status), "Config AP connected!");
                 return;
             }
 
-            GLOBAL_STATE->SYSTEM_MODULE.is_connected = false;
-            wifi_softap_on();
+            s_retry_num++;
+            if (s_retry_num >= WIFI_SOFTAP_FALLBACK_RETRY) {
+                wifi_softap_on();
+            }
 
             snprintf(GLOBAL_STATE->SYSTEM_MODULE.wifi_status, sizeof(GLOBAL_STATE->SYSTEM_MODULE.wifi_status), "%s (Error %d, retry #%d)", get_wifi_reason_string(event->reason), event->reason, s_retry_num);
             ESP_LOGI(TAG, "Wi-Fi status: %s", GLOBAL_STATE->SYSTEM_MODULE.wifi_status);
 
-            // Wait a little
-            vTaskDelay(5000 / portTICK_PERIOD_MS);
-
-            s_retry_num++;
-            ESP_LOGI(TAG, "Retrying Wi-Fi connection...");
-            esp_wifi_connect();
-
-            if (ip_acquire_timer != NULL) {
-                xTimerStop(ip_acquire_timer, 0);
-            }            
+            if (wifi_reconnect_timer == NULL) {
+                wifi_reconnect_timer = xTimerCreate("wifi_reconnect_timer", pdMS_TO_TICKS(WIFI_RECONNECT_DELAY_MS),
+                                                    pdFALSE, NULL, wifi_reconnect_callback);
+            }
+            if (wifi_reconnect_timer != NULL) {
+                xTimerReset(wifi_reconnect_timer, 0);
+            } else {
+                ESP_LOGW(TAG, "Failed to create Wi-Fi reconnect timer; retrying immediately");
+                wifi_reconnect_callback(NULL);
+            }
         }
         
         if (event_id == WIFI_EVENT_AP_START) {
@@ -482,6 +504,9 @@ static void event_handler(void * arg, esp_event_base_t event_base, int32_t event
 
         if (ip_acquire_timer != NULL) {
             xTimerStop(ip_acquire_timer, 0);
+        }
+        if (wifi_reconnect_timer != NULL) {
+            xTimerStop(wifi_reconnect_timer, 0);
         }
 
         GLOBAL_STATE->SYSTEM_MODULE.is_connected = true;

@@ -24,6 +24,10 @@ static const char * TAG = "bzm";
 static bzm_reactor_t REACTOR;
 static bzm_serial_transport_t TRANSPORT;
 static pthread_mutex_t REACTOR_LOCK = PTHREAD_MUTEX_INITIALIZER;
+/* AxeOS health reads must never queue behind the hot mining reactor.  The
+ * result task deliberately holds REACTOR_LOCK across a bounded serial read so
+ * a safe-off transition cannot tear down transport state underneath it. */
+static pthread_mutex_t DRIVER_HEALTH_LOCK = PTHREAD_MUTEX_INITIALIZER;
 static bool INITIALIZED;
 static bool STAGED_TRANSPORT_READY;
 /* Sticky for one staged session. A failed bridge renewal makes every later
@@ -264,6 +268,9 @@ bool BZM_send_work(GlobalState * state, const mining_template_t * template)
         }
         reset_result_dedup();
         FAST_DISPATCH_REMAINING = REACTOR.config.engine_count;
+        ESP_LOGI(TAG,
+                 "BZM independent engine rotation starting; dispatch interval %.0f ms",
+                 BZM_FAST_JOB_INTERVAL_MS);
     }
 
     bzm_work_t assigned_work;
@@ -407,7 +414,7 @@ bool BZM_running_stats_snapshot(bzm_running_stats_t * stats)
 void BZM_driver_health_publish(const asic_driver_health_t *health)
 {
     if (health == NULL) return;
-    pthread_mutex_lock(&REACTOR_LOCK);
+    pthread_mutex_lock(&DRIVER_HEALTH_LOCK);
     uint64_t state_since_ms = DRIVER_HEALTH.state_since_ms;
     if (!DRIVER_HEALTH.available ||
         DRIVER_HEALTH.lifecycle != health->lifecycle) {
@@ -416,7 +423,7 @@ void BZM_driver_health_publish(const asic_driver_health_t *health)
     DRIVER_HEALTH = *health;
     DRIVER_HEALTH.available = true;
     DRIVER_HEALTH.state_since_ms = state_since_ms;
-    pthread_mutex_unlock(&REACTOR_LOCK);
+    pthread_mutex_unlock(&DRIVER_HEALTH_LOCK);
 }
 
 bool BZM_driver_health_snapshot(GlobalState *state,
@@ -424,9 +431,9 @@ bool BZM_driver_health_snapshot(GlobalState *state,
 {
     (void)state;
     if (health == NULL) return false;
-    pthread_mutex_lock(&REACTOR_LOCK);
+    pthread_mutex_lock(&DRIVER_HEALTH_LOCK);
     *health = DRIVER_HEALTH;
-    pthread_mutex_unlock(&REACTOR_LOCK);
+    pthread_mutex_unlock(&DRIVER_HEALTH_LOCK);
     return health->available;
 }
 

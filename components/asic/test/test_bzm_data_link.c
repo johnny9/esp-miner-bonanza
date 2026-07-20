@@ -200,3 +200,31 @@ TEST_CASE("BZM ASIC address marks discard only an incomplete prior packet",
     TEST_ASSERT_EQUAL_UINT32(1, stats.emitted_frames);
     bzm_serial_transport_deinit(&transport);
 }
+
+TEST_CASE("BZM TDM payload ninth bit is not mistaken for an address boundary",
+          "[asic][bzm][data-link][frame-parser][tdm]")
+{
+    bzm_serial_transport_t transport = {0};
+    TEST_ASSERT_TRUE(bzm_serial_transport_init(&transport));
+
+    /* Captured from Bitaxe 1002: the final telemetry byte 0x02 and the next
+     * ASIC ID both carry bit 8. Only the known ASIC ID begins a frame. */
+    static const uint8_t telemetry[] = {
+        0x14, BZM_FRAME_TELEMETRY, 0xc8, 0x38, 0x97,
+        0xe1, 0x60, 0x43, 0xad, 0x02,
+    };
+    static const uint8_t marks[] = {1, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    TEST_ASSERT_EQUAL_UINT32(1, bzm_serial_transport_ingest_marked(
+        &transport, telemetry, marks, sizeof(telemetry), 100));
+
+    bzm_serial_parser_stats_t stats;
+    TEST_ASSERT_TRUE(bzm_serial_get_parser_stats(&transport, &stats));
+    TEST_ASSERT_EQUAL_UINT32(1, stats.emitted_frames);
+    TEST_ASSERT_EQUAL_UINT32(0, stats.discarded_bytes);
+    TEST_ASSERT_EQUAL_UINT32(0, stats.address_mark_realignments);
+
+    bzm_telemetry_sample_t sample;
+    TEST_ASSERT_TRUE(bzm_serial_get_telemetry(&transport, 0x14, &sample));
+    TEST_ASSERT_TRUE(sample.received);
+    bzm_serial_transport_deinit(&transport);
+}

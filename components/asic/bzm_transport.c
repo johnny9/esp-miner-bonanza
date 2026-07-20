@@ -175,7 +175,13 @@ size_t bzm_serial_transport_ingest_marked(bzm_serial_transport_t *transport,
     size_t emitted = 0;
     for (size_t index = 0; index < data_length; ++index) {
         if (ninth_bits[index] > 1) continue;
-        if (ninth_bits[index] == 1) {
+        /* Live 1002 TDM telemetry sets bit 8 on both its final payload byte
+         * and the following ASIC-ID byte. A high ninth bit is therefore an
+         * address boundary only when the byte itself is a valid wire ID. */
+        bool address_mark = ninth_bits[index] == 1 &&
+            (addressed_asic(data[index]) ||
+             data[index] == BZM_TDM_BROADCAST_ASIC_ID);
+        if (address_mark) {
             if (io->address_mark_synchronized &&
                 bzm_frame_parser_pending_bytes(&io->parser) != 0) {
                 (void)bzm_frame_parser_discard_pending(&io->parser);

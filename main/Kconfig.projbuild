@@ -116,12 +116,14 @@ menu "Bitaxe Configuration"
         config BZM_1002_PARSER_REALIGN_MAX_EVENTS
             int "Maximum discard bursts per parser realignment"
             range 1 20
-            default 2
+            default 6
             help
                 Maximum observations with new discarded bytes during one
                 unresolved realignment episode. A successfully realigned
                 parser resets this count; exceeding it before recovery is
-                continuous corruption and is BAD.
+                continuous corruption and is BAD. This normally matches the
+                maximum window count so scheduler sampling does not reject a
+                byte-bounded burst before its time bound expires.
 
         config BZM_1002_FAN_MIN_RPM
             int "Provisional minimum fan RPM"

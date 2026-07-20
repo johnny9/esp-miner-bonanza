@@ -134,10 +134,14 @@ menu "Bitaxe Configuration"
         config BZM_1002_TELEMETRY_MAX_AGE_MS
             int "Maximum Bonanza ASIC telemetry age (milliseconds)"
             range 100 5000
-            default 1000
+            default 2000
             help
                 Sensor, clock and runtime checks reject older samples. Every
-                startup step requires evidence captured after its writes.
+                startup step requires evidence captured after its writes. The
+                two-second runtime bound leaves two complete 500 ms health
+                observations for bounded parser realignment after one damaged
+                TDM region while the independent trip input and telemetry trip
+                bits remain immediate shutdown conditions.
 
         config BZM_1002_SENSOR_TDM_GAP_COUNT
             int "Thermal/voltage TDM reporting interval gap"
@@ -149,7 +153,7 @@ menu "Bitaxe Configuration"
                 intervals and reduce shared TDM traffic. At the reference
                 5 Mbaud, 100-slot, 127-bit schedule, 63 is approximately
                 6.2 reports per second per ASIC and remains inside the
-                default one-second telemetry freshness requirement.
+                default two-second telemetry freshness requirement.
 
         config BZM_1002_TEMP_MIN_C
             int "Provisional minimum ASIC temperature (C)"

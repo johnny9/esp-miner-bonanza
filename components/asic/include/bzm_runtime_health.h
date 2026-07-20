@@ -158,6 +158,7 @@ typedef struct
     bzm_serial_parser_stats_t accepted;
     bzm_serial_parser_stats_t last;
     uint32_t burst_discard_baseline;
+    uint32_t burst_unexpected_register_baseline;
     uint8_t clean_windows;
     uint8_t observed_windows;
     uint8_t episode_bursts;
@@ -203,12 +204,14 @@ bzm_parser_settling_result_t bzm_parser_settling_observe(bzm_parser_settling_t *
                                                          const bzm_serial_parser_stats_t * current, uint8_t required_clean_windows);
 
 /* RUNNING may optionally tolerate the same byte-at-a-time resynchronization
- * used by BIRDS. Only discarded bytes may advance. A valid frame must be
- * emitted after the most recent discard, followed by clean observations.
- * The byte and time-window limits bound one recovery episode. The event limit
- * bounds additional discard growth inside that still-unresolved episode; a
- * completed realignment resets it so later independently recovered corruption
- * does not become a lifetime failure. */
+ * used by BIRDS. Discarded bytes may advance, and the parser's rejected
+ * register-header classification may advance only in an observation where
+ * discarded bytes also advance. A valid frame must be emitted after the most
+ * recent discard, followed by clean observations. The byte and time-window
+ * limits bound one recovery episode. The event limit bounds additional
+ * discard growth inside that still-unresolved episode; a completed
+ * realignment resets it so later independently recovered corruption does not
+ * become a lifetime failure. */
 void bzm_parser_realign_init(bzm_parser_realign_t * realign, const bzm_serial_parser_stats_t * baseline);
 bzm_parser_realign_result_t bzm_parser_realign_observe(bzm_parser_realign_t * realign, const bzm_serial_parser_stats_t * current,
                                                        uint32_t maximum_discarded_bytes, uint8_t required_clean_windows,

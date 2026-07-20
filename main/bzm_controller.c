@@ -479,6 +479,7 @@ static bzm_runtime_health_result_t sample_runtime_health_locked(void)
 
     bzm_parser_realign_result_t parser_realign_result = BZM_PARSER_REALIGN_CLEAN;
     uint32_t parser_realign_discarded = 0;
+    uint32_t parser_realign_unexpected_registers = 0;
     if (input.holding && input.reached_stage == BZM_STAGE_RUNNING && input.parser_stats_available && RUNTIME.parser_realign_valid) {
         parser_realign_result = bzm_parser_realign_observe(
             &RUNTIME.parser_realign, &input.parser_current, CONFIG_BZM_1002_PARSER_REALIGN_MAX_DISCARDS,
@@ -486,18 +487,23 @@ static bzm_runtime_health_result_t sample_runtime_health_locked(void)
             CONFIG_BZM_1002_PARSER_REALIGN_MAX_EVENTS);
         if (RUNTIME.parser_realign.recovering || parser_realign_result == BZM_PARSER_REALIGN_RECOVERED) {
             parser_realign_discarded = input.parser_current.discarded_bytes - RUNTIME.parser_realign.burst_discard_baseline;
+            parser_realign_unexpected_registers = input.parser_current.unexpected_register_headers -
+                                                  RUNTIME.parser_realign.burst_unexpected_register_baseline;
         }
         if (parser_realign_result == BZM_PARSER_REALIGN_PENDING || parser_realign_result == BZM_PARSER_REALIGN_RECOVERED) {
-            /* The realignment state machine already proved every other
-             * parser counter exact. Suppress only this bounded discard delta
-             * while all independent health checks continue to run. */
+            /* The realignment state machine proved that every rejected
+             * register-header increment accompanied discarded bytes and that
+             * every other parser counter remained exact. Suppress only this
+             * bounded realignment episode while independent checks continue. */
             input.parser_baseline.discarded_bytes = input.parser_current.discarded_bytes;
+            input.parser_baseline.unexpected_register_headers = input.parser_current.unexpected_register_headers;
         }
         if (parser_realign_result == BZM_PARSER_REALIGN_RECOVERED) {
             RUNTIME.parser_baseline = RUNTIME.parser_realign.accepted;
             RUNTIME.parser_recovery_count++;
-            ESP_LOGW(TAG, "Mining parser realigned after %lu discarded bytes; valid frame resumed and %u clean windows passed",
-                     (unsigned long) parser_realign_discarded, (unsigned) CONFIG_BZM_1002_PARSER_REALIGN_CLEAN_WINDOWS);
+            ESP_LOGW(TAG, "Mining parser realigned after %lu discarded bytes and %lu rejected register headers; valid frame resumed and %u clean windows passed",
+                     (unsigned long) parser_realign_discarded, (unsigned long) parser_realign_unexpected_registers,
+                     (unsigned) CONFIG_BZM_1002_PARSER_REALIGN_CLEAN_WINDOWS);
         }
     }
 
@@ -529,16 +535,18 @@ static bzm_runtime_health_result_t sample_runtime_health_locked(void)
     RUNTIME.health = bzm_runtime_health_evaluate(&input);
     if (RUNTIME.health.status == BZM_RUNTIME_HEALTH_GOOD && parser_realign_result == BZM_PARSER_REALIGN_PENDING) {
         snprintf(RUNTIME.health.detail, sizeof(RUNTIME.health.detail),
-                 "Mining parser realignment pending: discarded=%lu/%u bursts=%u/%u cleanWindows=%u/%u windows=%u/%u",
+                 "Mining parser realignment pending: discarded=%lu/%u rejectedHeaders=%lu bursts=%u/%u cleanWindows=%u/%u windows=%u/%u",
                  (unsigned long) parser_realign_discarded, (unsigned) CONFIG_BZM_1002_PARSER_REALIGN_MAX_DISCARDS,
+                 (unsigned long) parser_realign_unexpected_registers,
                  (unsigned) RUNTIME.parser_realign.episode_bursts,
                  (unsigned) CONFIG_BZM_1002_PARSER_REALIGN_MAX_EVENTS,
                  (unsigned) RUNTIME.parser_realign.clean_windows, (unsigned) CONFIG_BZM_1002_PARSER_REALIGN_CLEAN_WINDOWS,
                  (unsigned) RUNTIME.parser_realign.observed_windows, (unsigned) CONFIG_BZM_1002_PARSER_REALIGN_MAX_WINDOWS);
     } else if (RUNTIME.health.status == BZM_RUNTIME_HEALTH_GOOD && parser_realign_result == BZM_PARSER_REALIGN_RECOVERED) {
         snprintf(RUNTIME.health.detail, sizeof(RUNTIME.health.detail),
-                 "Mining parser realigned: discarded=%lu valid frame resumed cleanWindows=%u",
-                 (unsigned long) parser_realign_discarded, (unsigned) RUNTIME.parser_realign.clean_windows);
+                 "Mining parser realigned: discarded=%lu rejectedHeaders=%lu valid frame resumed cleanWindows=%u",
+                 (unsigned long) parser_realign_discarded, (unsigned long) parser_realign_unexpected_registers,
+                 (unsigned) RUNTIME.parser_realign.clean_windows);
     }
     if (RUNTIME.health.status == BZM_RUNTIME_HEALTH_GOOD && input.holding && input.reached_stage >= BZM_STAGE_CLOCKS &&
         input.telemetry_available) {
@@ -1034,8 +1042,9 @@ static void runtime_monitor_task(void * parameter)
             (void) BZM_staged_poll(1);
         }
         if (holding) {
-            bzm_bridge_safety_status_t status;
-            if (BZM_bridge_safety_heartbeat(&status) != ESP_OK || !status.valid ||
+            bzm_bridge_safety_status_t status = {0};
+            esp_err_t heartbeat_err = BZM_bridge_safety_heartbeat(&status);
+            if (heartbeat_err != ESP_OK || !status.valid ||
                 status.state != BZM_BRIDGE_SAFETY_STATE_CONTROLLED || status.lease_remaining_ms == 0 ||
                 !bridge_status_runtime_good(&status)) {
                 close_dispatch_locked();
@@ -1046,6 +1055,14 @@ static void runtime_monitor_task(void * parameter)
                 snprintf(RUNTIME.health.detail, sizeof(RUNTIME.health.detail), "bridge heartbeat/status interlock failed");
                 RUNTIME.health_valid = true;
                 RUNTIME.health_sampled_at_ms = current_ms;
+                ESP_LOGE(TAG,
+                         "runtime bridge interlock BAD: err=%s valid=%u state=%u lease=%lu fault=%u trip=%u verdict=0x%02x",
+                         esp_err_to_name(heartbeat_err), (unsigned)status.valid,
+                         (unsigned)status.state,
+                         (unsigned long)status.lease_remaining_ms,
+                         (unsigned)status.fault,
+                         (unsigned)status.trip_input_asserted,
+                         (unsigned)status.runtime_verdict);
                 (void) bzm_supervisor_latch_fault(&RUNTIME.supervisor, BZM_RUNTIME_HEALTH_FAULT_BRIDGE_UNAVAILABLE,
                                                   RUNTIME.health.detail);
             } else {
@@ -1058,6 +1075,9 @@ static void runtime_monitor_task(void * parameter)
             bzm_runtime_health_result_t health = sample_runtime_health_locked();
             if (health.status == BZM_RUNTIME_HEALTH_BAD) {
                 close_dispatch_locked();
+                ESP_LOGE(TAG, "runtime health BAD fault=%s(%u): %s",
+                         bzm_runtime_health_fault_name(health.fault),
+                         (unsigned)health.fault, health.detail);
                 (void) bzm_supervisor_latch_fault(&RUNTIME.supervisor, (uint32_t) health.fault, health.detail);
             }
         }
@@ -1065,6 +1085,9 @@ static void runtime_monitor_task(void * parameter)
             bzm_running_evidence_result_t evidence = evaluate_running_evidence_locked(current_ms);
             if (evidence.status == BZM_RUNNING_EVIDENCE_BAD) {
                 close_dispatch_locked();
+                ESP_LOGE(TAG, "runtime mining evidence BAD fault=%s(%u): %s",
+                         bzm_running_evidence_fault_name(evidence.fault),
+                         (unsigned)evidence.fault, evidence.detail);
                 (void) bzm_supervisor_latch_fault(&RUNTIME.supervisor, 0x1007, evidence.detail);
             }
         }

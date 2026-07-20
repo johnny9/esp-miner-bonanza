@@ -523,12 +523,48 @@ TEST_CASE("BZM Stage 7 parser realignment rejects continuous and unrelated corru
 
     bzm_parser_realign_init(&realign, &baseline);
     current = baseline;
-    current.discarded_bytes = 5;
     current.unexpected_register_headers = 1;
+    TEST_ASSERT_EQUAL(BZM_PARSER_REALIGN_BAD, bzm_parser_realign_observe(&realign, &current, 32, 2, 6, 2));
+
+    bzm_parser_realign_init(&realign, &baseline);
+    current = baseline;
+    current.discarded_bytes = 5;
+    current.unexpected_register_headers = 2;
     TEST_ASSERT_EQUAL(BZM_PARSER_REALIGN_BAD, bzm_parser_realign_observe(&realign, &current, 32, 2, 6, 2));
 
     bzm_parser_realign_init(&realign, NULL);
     TEST_ASSERT_EQUAL(BZM_PARSER_REALIGN_BAD, bzm_parser_realign_observe(&realign, &baseline, 32, 2, 6, 2));
+}
+
+TEST_CASE("BZM Stage 7 parser realignment accepts a rejected header inside a bounded discard episode",
+          "[asic][bzm][runtime-health]")
+{
+    bzm_serial_parser_stats_t baseline = {.emitted_frames = 100, .discarded_bytes = 4};
+    bzm_serial_parser_stats_t current = baseline;
+    bzm_parser_realign_t realign;
+    bzm_parser_realign_init(&realign, &baseline);
+
+    /* This is the counter relationship captured on the device: the false
+     * register header is rejected while the byte-at-a-time parser discards
+     * the same damaged nine-byte region. */
+    current.discarded_bytes = 13;
+    current.unexpected_register_headers = 1;
+    current.emitted_frames_at_last_discard = current.emitted_frames;
+    TEST_ASSERT_EQUAL(BZM_PARSER_REALIGN_PENDING, bzm_parser_realign_observe(&realign, &current, 32, 2, 6, 2));
+    TEST_ASSERT_EQUAL_UINT32(4, realign.burst_discard_baseline);
+    TEST_ASSERT_EQUAL_UINT32(0, realign.burst_unexpected_register_baseline);
+
+    ++current.emitted_frames;
+    TEST_ASSERT_EQUAL(BZM_PARSER_REALIGN_PENDING, bzm_parser_realign_observe(&realign, &current, 32, 2, 6, 2));
+    ++current.emitted_frames;
+    TEST_ASSERT_EQUAL(BZM_PARSER_REALIGN_RECOVERED, bzm_parser_realign_observe(&realign, &current, 32, 2, 6, 2));
+    TEST_ASSERT_EQUAL_UINT32(13, realign.accepted.discarded_bytes);
+    TEST_ASSERT_EQUAL_UINT32(1, realign.accepted.unexpected_register_headers);
+
+    /* A later header classification without another discard is independent
+     * corruption and still fails immediately. */
+    ++current.unexpected_register_headers;
+    TEST_ASSERT_EQUAL(BZM_PARSER_REALIGN_BAD, bzm_parser_realign_observe(&realign, &current, 32, 2, 6, 2));
 }
 
 TEST_CASE("BZM Stage 7 parser realignment permits later independently recovered episodes", "[asic][bzm][runtime-health]")

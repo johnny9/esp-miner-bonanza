@@ -209,6 +209,7 @@ static bool generate_work(GlobalState *GLOBAL_STATE,
                           uint64_t extranonce_2, double difficulty,
                           bool clean_jobs)
 {
+    static bool uninitialized_reported = false;
     mining_template_t template;
     if (!mining_template_build_sv1(
             notification, GLOBAL_STATE->extranonce_str,
@@ -222,10 +223,14 @@ static bool generate_work(GlobalState *GLOBAL_STATE,
 
     // Check if ASIC is initialized before trying to send work
     if (!GLOBAL_STATE->ASIC_initalized) {
-        ESP_LOGW(TAG, "ASIC not initialized, skipping job send");
+        if (!uninitialized_reported) {
+            ESP_LOGW(TAG, "ASIC not initialized, suppressing job sends until recovery");
+            uninitialized_reported = true;
+        }
         mining_template_free(&template);
         return false;
     }
+    uninitialized_reported = false;
 
     bool sent = ASIC_send_work(GLOBAL_STATE, &template);
     if (!sent) {

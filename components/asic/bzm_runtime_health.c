@@ -278,9 +278,16 @@ void bzm_parser_realign_init(bzm_parser_realign_t * realign, const bzm_serial_pa
 static bool parser_realign_transition_is_valid(const bzm_serial_parser_stats_t * baseline,
                                                const bzm_serial_parser_stats_t * current)
 {
-    return baseline != NULL && current != NULL && current->emitted_frames >= baseline->emitted_frames &&
-           current->discarded_bytes >= baseline->discarded_bytes &&
-           current->unexpected_register_headers == baseline->unexpected_register_headers &&
+    if (baseline == NULL || current == NULL || current->discarded_bytes < baseline->discarded_bytes ||
+        current->unexpected_register_headers < baseline->unexpected_register_headers) {
+        return false;
+    }
+
+    uint32_t discarded_delta = current->discarded_bytes - baseline->discarded_bytes;
+    uint32_t unexpected_register_delta =
+        current->unexpected_register_headers - baseline->unexpected_register_headers;
+    return current->emitted_frames >= baseline->emitted_frames &&
+           unexpected_register_delta <= discarded_delta &&
            current->dropped_results == baseline->dropped_results &&
            current->rejected_result_frames == baseline->rejected_result_frames &&
            current->unmatched_register_frames == baseline->unmatched_register_frames &&
@@ -295,11 +302,13 @@ bzm_parser_realign_result_t bzm_parser_realign_observe(bzm_parser_realign_t * re
 {
     if (realign == NULL || !realign->initialized || current == NULL || maximum_discarded_bytes == 0 ||
         required_clean_windows == 0 || maximum_windows < required_clean_windows || maximum_events == 0 ||
-        !parser_realign_transition_is_valid(&realign->accepted, current)) {
+        !parser_realign_transition_is_valid(&realign->accepted, current) ||
+        !parser_realign_transition_is_valid(&realign->last, current)) {
         return BZM_PARSER_REALIGN_BAD;
     }
 
-    if (!realign->recovering && current->discarded_bytes == realign->accepted.discarded_bytes) {
+    if (!realign->recovering && current->discarded_bytes == realign->accepted.discarded_bytes &&
+        current->unexpected_register_headers == realign->accepted.unexpected_register_headers) {
         realign->accepted = *current;
         realign->last = *current;
         realign->episode_bursts = 0;
@@ -309,6 +318,7 @@ bzm_parser_realign_result_t bzm_parser_realign_observe(bzm_parser_realign_t * re
     if (!realign->recovering) {
         realign->recovering = true;
         realign->burst_discard_baseline = realign->accepted.discarded_bytes;
+        realign->burst_unexpected_register_baseline = realign->accepted.unexpected_register_headers;
         realign->episode_bursts = 1;
         realign->clean_windows = 0;
         realign->observed_windows = 1;
@@ -316,7 +326,8 @@ bzm_parser_realign_result_t bzm_parser_realign_observe(bzm_parser_realign_t * re
     } else {
         if (realign->observed_windows < UINT8_MAX)
             ++realign->observed_windows;
-        if (current->discarded_bytes != realign->last.discarded_bytes) {
+        if (current->discarded_bytes != realign->last.discarded_bytes ||
+            current->unexpected_register_headers != realign->last.unexpected_register_headers) {
             if (realign->episode_bursts >= maximum_events)
                 return BZM_PARSER_REALIGN_BAD;
             ++realign->episode_bursts;

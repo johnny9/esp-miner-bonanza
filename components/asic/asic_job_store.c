@@ -44,8 +44,7 @@ bool asic_job_store_store_slot(asic_job_store_t *store, uint8_t slot,
                                const mining_template_t *template,
                                asic_work_handle_t *handle)
 {
-    if (store == NULL || template == NULL ||
-        slot >= ASIC_JOB_STORE_CAPACITY) {
+    if (store == NULL || template == NULL) {
         return false;
     }
 
@@ -63,7 +62,8 @@ bool asic_job_store_store_generated(asic_job_store_t *store,
     if (store == NULL || template == NULL) return false;
 
     pthread_mutex_lock(&store->lock);
-    uint8_t slot = store->next_slot++ % ASIC_JOB_STORE_CAPACITY;
+    uint8_t slot = (uint8_t)(store->next_slot++ %
+                             ASIC_JOB_STORE_CAPACITY);
     uint64_t generation = store->next_generation++;
     if (store->next_generation == 0) store->next_generation = 1;
     asic_work_handle_t generated = (generation << 8) | slot;
@@ -83,8 +83,6 @@ bool asic_job_store_snapshot(asic_job_store_t *store,
     }
 
     uint8_t slot = (uint8_t)(handle & 0xff);
-    if (slot >= ASIC_JOB_STORE_CAPACITY) return false;
-
     memset(snapshot, 0, sizeof(*snapshot));
     pthread_mutex_lock(&store->lock);
     asic_job_store_entry_t *entry = &store->entries[slot];
@@ -99,8 +97,6 @@ bool asic_job_store_release(asic_job_store_t *store,
 {
     if (store == NULL || handle == ASIC_WORK_HANDLE_INVALID) return false;
     uint8_t slot = (uint8_t)(handle & 0xff);
-    if (slot >= ASIC_JOB_STORE_CAPACITY) return false;
-
     pthread_mutex_lock(&store->lock);
     asic_job_store_entry_t *entry = &store->entries[slot];
     bool released = entry->valid && entry->handle == handle;

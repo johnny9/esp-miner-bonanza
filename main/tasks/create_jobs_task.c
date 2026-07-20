@@ -20,9 +20,15 @@
 
 static const char *TAG = "create_jobs_task";
 
-static void generate_work(GlobalState *GLOBAL_STATE, mining_notify *notification, uint64_t extranonce_2, double difficulty);
-static void generate_work_sv2(GlobalState *GLOBAL_STATE, sv2_job_t *job, double difficulty);
-static void generate_work_sv2_ext(GlobalState *GLOBAL_STATE, sv2_ext_job_t *job, double difficulty, uint64_t extranonce_2_counter);
+static bool generate_work(GlobalState *GLOBAL_STATE, mining_notify *notification,
+                          uint64_t extranonce_2, double difficulty,
+                          bool clean_jobs);
+static bool generate_work_sv2(GlobalState *GLOBAL_STATE, sv2_job_t *job,
+                              double difficulty, bool clean_jobs);
+static bool generate_work_sv2_ext(GlobalState *GLOBAL_STATE, sv2_ext_job_t *job,
+                                  double difficulty,
+                                  uint64_t extranonce_2_counter,
+                                  bool clean_jobs);
 
 // Free a work item using the correct free function for the protocol it was created under
 static void free_work_item(GlobalState *GLOBAL_STATE, void *work, stratum_protocol_t protocol)
@@ -47,6 +53,7 @@ void create_jobs_task(void *pvParameters)
     void *current_work = NULL;
     stratum_protocol_t current_work_protocol = GLOBAL_STATE->stratum_protocol;
     uint64_t extranonce_2 = 0;
+    bool clean_jobs_pending = false;
     int timeout_ms = ASIC_get_asic_job_frequency_ms(GLOBAL_STATE);
 
     ESP_LOGI(TAG, "ASIC Job Interval: %d ms", timeout_ms);
@@ -66,6 +73,7 @@ void create_jobs_task(void *pvParameters)
                          active_protocol == STRATUM_PROTOCOL_V2 ? STRATUM_V2 : STRATUM_V1);
                 free_work_item(GLOBAL_STATE, current_work, current_work_protocol);
                 current_work = NULL;
+                clean_jobs_pending = false;
             }
             current_work_protocol = active_protocol;
         }
@@ -90,6 +98,7 @@ void create_jobs_task(void *pvParameters)
                 ESP_LOGW(TAG, "Protocol switch detected during dequeue, discarding stale item");
                 free(new_work);
                 current_work_protocol = active_protocol;
+                clean_jobs_pending = false;
                 timeout_ms = ASIC_get_asic_job_frequency_ms(GLOBAL_STATE);
                 continue;
             }
@@ -133,8 +142,10 @@ void create_jobs_task(void *pvParameters)
                 clean = ((mining_notify *)current_work)->clean_jobs;
             }
             if (!clean) {
+                clean_jobs_pending = false;
                 continue;
             }
+            clean_jobs_pending = true;
         } else {
             if (current_work == NULL) {
                 vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -161,28 +172,40 @@ void create_jobs_task(void *pvParameters)
         if (active_protocol != current_work_protocol) {
             free_work_item(GLOBAL_STATE, current_work, current_work_protocol);
             current_work = NULL;
+            clean_jobs_pending = false;
             current_work_protocol = active_protocol;
             timeout_ms = ASIC_get_asic_job_frequency_ms(GLOBAL_STATE);
             continue;
         }
 
         // Generate and send job
+        bool sent = false;
         if (active_protocol == STRATUM_PROTOCOL_V2) {
             if (stratum_v2_is_extended_channel(GLOBAL_STATE)) {
-                generate_work_sv2_ext(GLOBAL_STATE, (sv2_ext_job_t *)current_work, difficulty, extranonce_2);
+                sent = generate_work_sv2_ext(
+                    GLOBAL_STATE, (sv2_ext_job_t *)current_work, difficulty,
+                    extranonce_2, clean_jobs_pending);
                 extranonce_2++;
             } else {
-                generate_work_sv2(GLOBAL_STATE, (sv2_job_t *)current_work, difficulty);
+                sent = generate_work_sv2(
+                    GLOBAL_STATE, (sv2_job_t *)current_work, difficulty,
+                    clean_jobs_pending);
             }
         } else {
-            generate_work(GLOBAL_STATE, (mining_notify *)current_work, extranonce_2, difficulty);
+            sent = generate_work(
+                GLOBAL_STATE, (mining_notify *)current_work, extranonce_2,
+                difficulty, clean_jobs_pending);
             extranonce_2++;
         }
+        if (sent) clean_jobs_pending = false;
         timeout_ms = ASIC_get_asic_job_frequency_ms(GLOBAL_STATE);
     }
 }
 
-static void generate_work(GlobalState *GLOBAL_STATE, mining_notify *notification, uint64_t extranonce_2, double difficulty)
+static bool generate_work(GlobalState *GLOBAL_STATE,
+                          mining_notify *notification,
+                          uint64_t extranonce_2, double difficulty,
+                          bool clean_jobs)
 {
     mining_template_t template;
     if (!mining_template_build_sv1(
@@ -191,66 +214,79 @@ static void generate_work(GlobalState *GLOBAL_STATE, mining_notify *notification
             GLOBAL_STATE->version_mask, difficulty, &template)) {
         ESP_LOGE(TAG, "Unable to build SV1 job (extranonce2 length %d)",
                  GLOBAL_STATE->extranonce_2_len);
-        return;
+        return false;
     }
+    template.clean_jobs = clean_jobs;
 
     // Check if ASIC is initialized before trying to send work
     if (!GLOBAL_STATE->ASIC_initalized) {
         ESP_LOGW(TAG, "ASIC not initialized, skipping job send");
         mining_template_free(&template);
-        return;
+        return false;
     }
 
-    if (!ASIC_send_work(GLOBAL_STATE, &template)) {
+    bool sent = ASIC_send_work(GLOBAL_STATE, &template);
+    if (!sent) {
         ESP_LOGE(TAG, "ASIC rejected SV1 work");
     }
     mining_template_free(&template);
+    return sent;
 }
 
 // Standard channels rely on the advertised ASIC rolling capabilities for
 // unique work rather than any chip-family-specific assumption here.
-static void generate_work_sv2(GlobalState *GLOBAL_STATE, sv2_job_t *sv2_job, double difficulty)
+static bool generate_work_sv2(GlobalState *GLOBAL_STATE, sv2_job_t *sv2_job,
+                              double difficulty, bool clean_jobs)
 {
     mining_template_t template;
     if (!mining_template_build_sv2_standard(
             sv2_job, GLOBAL_STATE->version_mask, difficulty, &template)) {
         ESP_LOGE(TAG, "Unable to build SV2 standard job");
-        return;
+        return false;
     }
+    template.clean_jobs = clean_jobs;
 
     if (!GLOBAL_STATE->ASIC_initalized) {
         ESP_LOGW(TAG, "ASIC not initialized, skipping SV2 job send");
         mining_template_free(&template);
-        return;
+        return false;
     }
 
-    if (!ASIC_send_work(GLOBAL_STATE, &template)) {
+    bool sent = ASIC_send_work(GLOBAL_STATE, &template);
+    if (!sent) {
         ESP_LOGE(TAG, "ASIC rejected SV2 standard work");
     }
     mining_template_free(&template);
+    return sent;
 }
 
 // Extended channel work generation: compute coinbase hash from prefix+extranonce+suffix,
 // then merkle root from merkle path, then midstates. extranonce_2 provides unique work.
-static void generate_work_sv2_ext(GlobalState *GLOBAL_STATE, sv2_ext_job_t *ext_job,
-                                   double difficulty, uint64_t extranonce_2_counter)
+static bool generate_work_sv2_ext(GlobalState *GLOBAL_STATE,
+                                  sv2_ext_job_t *ext_job,
+                                  double difficulty,
+                                  uint64_t extranonce_2_counter,
+                                  bool clean_jobs)
 {
     mining_template_t template;
     if (!mining_template_build_sv2_extended(
             ext_job, GLOBAL_STATE->sv2_conn, extranonce_2_counter,
             GLOBAL_STATE->version_mask, difficulty, &template)) {
         ESP_LOGE(TAG, "Unable to build SV2 extended job");
-        return;
+        return false;
     }
+    template.clean_jobs = clean_jobs;
 
     if (!GLOBAL_STATE->ASIC_initalized) {
         ESP_LOGW(TAG, "ASIC not initialized, skipping SV2 ext job send");
         mining_template_free(&template);
-        return;
+        return false;
     }
 
-    if (!ASIC_send_work(GLOBAL_STATE, &template)) {
+    bool sent = ASIC_send_work(GLOBAL_STATE, &template);
+    if (!sent) {
         ESP_LOGE(TAG, "ASIC rejected SV2 extended work");
     }
     mining_template_free(&template);
+    return sent;
 }

@@ -65,6 +65,11 @@ typedef struct {
     void *transport_context;
     bzm_reactor_config_t config;
     bzm_assignment_t assignments[BZM_MAX_ACTIVE_WORK];
+    /* The hardware may report the just-replaced job after the next job has
+     * been programmed. Retain one prior generation independently per engine
+     * instead of assuming every engine shares one batch identity. */
+    bzm_assignment_t previous_assignments[BZM_MAX_ACTIVE_WORK];
+    uint8_t next_engine_sequence[BZM_MAX_ACTIVE_WORK];
     /* A completed full dispatch has common job/version/time metadata across
      * all engines. Retain that compact descriptor while the next sequence is
      * programmed so in-flight results from both hardware generations map. */

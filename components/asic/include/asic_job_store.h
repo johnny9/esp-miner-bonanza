@@ -8,7 +8,10 @@
 #include "asic_result.h"
 #include "mining.h"
 
-#define ASIC_JOB_STORE_CAPACITY 128
+/* BZM keeps one independently generated job active for each of its 236
+ * logical engines. Keep a full 8-bit hardware-handle slot space so every
+ * current assignment remains addressable while the scheduler rotates. */
+#define ASIC_JOB_STORE_CAPACITY 256
 
 typedef struct {
     bool valid;
@@ -19,7 +22,7 @@ typedef struct {
 typedef struct {
     pthread_mutex_t lock;
     asic_job_store_entry_t entries[ASIC_JOB_STORE_CAPACITY];
-    uint8_t next_slot;
+    uint16_t next_slot;
     uint64_t next_generation;
 } asic_job_store_t;
 

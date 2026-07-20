@@ -273,8 +273,9 @@ bool BZM_send_work(GlobalState * state, const mining_template_t * template)
         }
     }
 
-    size_t assigned = 0;
-    bzm_assign_status_t status = bzm_reactor_dispatch(&REACTOR, template, &assigned);
+    bzm_work_t assigned_work;
+    bzm_assign_status_t status =
+        bzm_reactor_assign(&REACTOR, template, &assigned_work);
     if (status == BZM_ASSIGN_FLUSH_REQUIRED) {
         if (!bzm_reactor_clear_work(&REACTOR)) {
             pthread_mutex_unlock(&REACTOR_LOCK);
@@ -282,18 +283,25 @@ bool BZM_send_work(GlobalState * state, const mining_template_t * template)
             ESP_LOGE(TAG, "Unable to complete BZM flush barrier");
             return false;
         }
-        status = bzm_reactor_dispatch(&REACTOR, template, &assigned);
+        status = bzm_reactor_assign(&REACTOR, template, &assigned_work);
     }
-    size_t chip_engines = assigned * TRANSPORT.asic_count;
+    bool rotation_complete = status == BZM_ASSIGN_OK &&
+        REACTOR.next_engine == 0;
+    size_t chip_engines = status == BZM_ASSIGN_OK
+        ? TRANSPORT.asic_count : 0;
     pthread_mutex_unlock(&REACTOR_LOCK);
 
     if (status != BZM_ASSIGN_OK) {
         atomic_fetch_add_explicit(&RUNNING_DISPATCH_FAILURES, 1, memory_order_relaxed);
-        ESP_LOGE(TAG, "BZM dispatch failed (%d) after %u engines", status, (unsigned) assigned);
+        ESP_LOGE(TAG, "BZM work assignment failed (%d)", status);
         return false;
     }
-    atomic_fetch_add_explicit(&RUNNING_DISPATCH_BATCHES, 1, memory_order_relaxed);
-    atomic_fetch_add_explicit(&RUNNING_DISPATCHED_LOGICAL_ENGINES, assigned, memory_order_relaxed);
+    if (rotation_complete) {
+        atomic_fetch_add_explicit(&RUNNING_DISPATCH_BATCHES, 1,
+                                  memory_order_relaxed);
+    }
+    atomic_fetch_add_explicit(&RUNNING_DISPATCHED_LOGICAL_ENGINES, 1,
+                              memory_order_relaxed);
     atomic_fetch_add_explicit(&RUNNING_DISPATCHED_CHIP_ENGINES, chip_engines, memory_order_relaxed);
     return true;
 }

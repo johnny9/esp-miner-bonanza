@@ -718,11 +718,9 @@ TEST_CASE("BZM incremental assignments retain compact IDs in balanced order",
         TEST_ASSERT_EQUAL(BZM_ASSIGN_OK,
                           bzm_reactor_assign(reactor, &template, &work));
         TEST_ASSERT_EQUAL_UINT16(expected.physical_id, work.engine_id);
-        TEST_ASSERT_EQUAL_HEX32(schedule_index * 0x40000000U,
-                                work.starting_nonce);
-        TEST_ASSERT_EQUAL_HEX32(
-            ((schedule_index + 1) * 0x40000000ULL) - 1,
-            work.end_nonce);
+        TEST_ASSERT_EQUAL_HEX32(0, work.starting_nonce);
+        TEST_ASSERT_EQUAL_HEX32(UINT32_MAX, work.end_nonce);
+        TEST_ASSERT_EQUAL_UINT8(0, work.logical_sequence);
     }
 
     // Physical engine 10 is the second scheduled engine but compact engine
@@ -732,7 +730,7 @@ TEST_CASE("BZM incremental assignments retain compact IDs in balanced order",
         .engine_id = 10,
         .status = 8,
         .nonce = 0x100,
-        .sequence_id = 1,
+        .sequence_id = 0,
         .time = 16,
     };
     asic_event_t event;
@@ -740,6 +738,70 @@ TEST_CASE("BZM incremental assignments retain compact IDs in balanced order",
     TEST_ASSERT_EQUAL_UINT16(10, event.data.share.engine_id);
 
     mining_template_free(&template);
+    free(transport);
+    free(reactor);
+    delete_store(store);
+}
+
+TEST_CASE("BZM assigns independent templates and retains one prior job per engine",
+          "[asic][bzm][reactor][scheduler][result]")
+{
+    asic_job_store_t *store = new_store();
+    simulated_transport_t *transport = new_transport();
+    bzm_reactor_t *reactor = new_reactor(store, transport, 2);
+
+    mining_template_t engine0_first = bzm_template("engine0-first", false);
+    mining_template_t engine1_first = bzm_template("engine1-first", false);
+    mining_template_t engine0_next = bzm_template("engine0-next", false);
+    engine0_first.ntime = 100;
+    engine1_first.ntime = 200;
+    engine0_next.ntime = 300;
+
+    TEST_ASSERT_EQUAL(BZM_ASSIGN_OK,
+                      bzm_reactor_assign(reactor, &engine0_first, NULL));
+    TEST_ASSERT_EQUAL(BZM_ASSIGN_OK,
+                      bzm_reactor_assign(reactor, &engine1_first, NULL));
+    TEST_ASSERT_EQUAL(BZM_ASSIGN_OK,
+                      bzm_reactor_assign(reactor, &engine0_next, NULL));
+
+    TEST_ASSERT_EQUAL_UINT32(3, transport->write_count);
+    TEST_ASSERT_EQUAL_UINT32(3, transport->checkpoint_count);
+    TEST_ASSERT_NOT_EQUAL(
+        (uint32_t)transport->work[0].source.handle,
+        (uint32_t)transport->work[1].source.handle);
+    TEST_ASSERT_NOT_EQUAL(
+        (uint32_t)transport->work[0].source.handle,
+        (uint32_t)transport->work[2].source.handle);
+    TEST_ASSERT_EQUAL_UINT8(0, transport->work[0].logical_sequence);
+    TEST_ASSERT_EQUAL_UINT8(0, transport->work[1].logical_sequence);
+    TEST_ASSERT_EQUAL_UINT8(1, transport->work[2].logical_sequence);
+    TEST_ASSERT_EQUAL_HEX32(0, transport->work[2].starting_nonce);
+    TEST_ASSERT_EQUAL_HEX32(UINT32_MAX, transport->work[2].end_nonce);
+
+    bzm_raw_result_t raw = {
+        .asic_id = BZM_FIRST_ASIC_ID,
+        .engine_id = transport->work[0].engine_id,
+        .status = 8,
+        .sequence_id = 0,
+        .time = 16,
+    };
+    asic_event_t event;
+    TEST_ASSERT_TRUE(bzm_reactor_map_result(reactor, &raw, &event));
+    TEST_ASSERT_EQUAL_UINT32(
+        (uint32_t)transport->work[0].source.handle,
+        (uint32_t)event.data.share.work_handle);
+    TEST_ASSERT_EQUAL_HEX32(100, event.data.share.final_ntime);
+
+    raw.sequence_id = 4;
+    TEST_ASSERT_TRUE(bzm_reactor_map_result(reactor, &raw, &event));
+    TEST_ASSERT_EQUAL_UINT32(
+        (uint32_t)transport->work[2].source.handle,
+        (uint32_t)event.data.share.work_handle);
+    TEST_ASSERT_EQUAL_HEX32(300, event.data.share.final_ntime);
+
+    mining_template_free(&engine0_next);
+    mining_template_free(&engine1_first);
+    mining_template_free(&engine0_first);
     free(transport);
     free(reactor);
     delete_store(store);
@@ -1055,6 +1117,8 @@ TEST_CASE("BZM partial dispatch is flushed and never publishes a handle",
     mining_template_t snapshot;
     TEST_ASSERT_FALSE(asic_job_store_snapshot(
         store, transport->work[0].source.handle, &snapshot));
+    free(transport);
+    free(reactor);
 
     simulated_transport_t *first_write_failure = new_transport();
     first_write_failure->fail_immediately = true;
@@ -1067,6 +1131,8 @@ TEST_CASE("BZM partial dispatch is flushed and never publishes a handle",
     TEST_ASSERT_EQUAL_UINT32(0, assigned);
     TEST_ASSERT_EQUAL_UINT32(1, first_write_failure->flush_count);
     TEST_ASSERT_FALSE(bzm_reactor_is_flush_pending(first_write_reactor));
+    free(first_write_failure);
+    free(first_write_reactor);
 
     simulated_transport_t *checkpoint_failure = new_transport();
     checkpoint_failure->fail_checkpoint = true;
@@ -1081,6 +1147,8 @@ TEST_CASE("BZM partial dispatch is flushed and never publishes a handle",
     TEST_ASSERT_EQUAL_UINT32(1, checkpoint_failure->checkpoint_count);
     TEST_ASSERT_EQUAL_UINT32(1, checkpoint_failure->flush_count);
     TEST_ASSERT_FALSE(bzm_reactor_is_flush_pending(checkpoint_reactor));
+    free(checkpoint_failure);
+    free(checkpoint_reactor);
 
     simulated_transport_t *transport2 = new_transport();
     bzm_reactor_t *invalid = calloc(1, sizeof(*invalid));
@@ -1095,13 +1163,7 @@ TEST_CASE("BZM partial dispatch is flushed and never publishes a handle",
 
     mining_template_free(&template);
     free(transport2);
-    free(first_write_failure);
-    free(first_write_reactor);
-    free(checkpoint_failure);
-    free(checkpoint_reactor);
-    free(transport);
     free(invalid);
-    free(reactor);
     delete_store(store);
 }
 

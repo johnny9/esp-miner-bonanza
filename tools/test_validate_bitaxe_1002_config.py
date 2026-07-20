@@ -8,9 +8,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from validate_bitaxe_1002_config import (
     EXPECTED,
-    EXPECTED_SAFE_DEFAULTS,
+    EXPECTED_PRODUCTION_DEFAULTS,
     validate,
-    validate_safe_defaults,
+    validate_production_defaults,
 )
 
 
@@ -68,14 +68,14 @@ class Bitaxe1002ConfigValidationTest(unittest.TestCase):
             validate(path)
 
 
-class Bitaxe1002SafeDefaultsValidationTest(unittest.TestCase):
+class Bitaxe1002ProductionDefaultsValidationTest(unittest.TestCase):
     def write_defaults(self, overrides=None, omitted=()):
         overrides = overrides or {}
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         path = Path(temporary.name) / "sdkconfig.defaults"
         lines = []
-        for key, expected in EXPECTED_SAFE_DEFAULTS.items():
+        for key, expected in EXPECTED_PRODUCTION_DEFAULTS.items():
             if key in omitted:
                 continue
             value = overrides.get(key, expected)
@@ -85,16 +85,16 @@ class Bitaxe1002SafeDefaultsValidationTest(unittest.TestCase):
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
 
-    def test_accepts_explicit_fail_closed_sdkconfig_defaults(self):
-        validate_safe_defaults(self.write_defaults())
+    def test_accepts_explicit_production_sdkconfig_defaults(self):
+        validate_production_defaults(self.write_defaults())
 
-    def test_rejects_a_powered_default_image(self):
+    def test_rejects_a_non_mining_default_image(self):
         path = self.write_defaults({
-            "CONFIG_BZM_1002_MAX_STAGE": "5",
-            "CONFIG_BZM_1002_POWERED_VALIDATION": "y",
+            "CONFIG_BZM_1002_MAX_STAGE": "0",
+            "CONFIG_BZM_1002_POWERED_VALIDATION": None,
         })
         with self.assertRaisesRegex(ValueError, "MAX_STAGE.*POWERED_VALIDATION"):
-            validate_safe_defaults(path)
+            validate_production_defaults(path)
 
     def test_rejects_uart_console_on_the_bonanza_bridge_pins(self):
         path = self.write_defaults({
@@ -107,56 +107,56 @@ class Bitaxe1002SafeDefaultsValidationTest(unittest.TestCase):
             ValueError,
             "ESP_CONSOLE_UART_DEFAULT.*ESP_CONSOLE_USB_SERIAL_JTAG",
         ):
-            validate_safe_defaults(path)
+            validate_production_defaults(path)
 
     def test_rejects_an_enabled_lab_escape_hatch(self):
         path = self.write_defaults({
             "CONFIG_BZM_1002_ALLOW_ESP_ONLY_KILL_IN_LAB": "y",
         })
         with self.assertRaisesRegex(ValueError, "ALLOW_ESP_ONLY"):
-            validate_safe_defaults(path)
+            validate_production_defaults(path)
 
-    def test_rejects_board_managed_safety_in_fail_closed_defaults(self):
+    def test_requires_board_managed_fixed_voltage_safety(self):
         path = self.write_defaults({
-            "CONFIG_BZM_1002_BOARD_MANAGED_SAFETY": "y",
+            "CONFIG_BZM_1002_BOARD_MANAGED_SAFETY": None,
         })
         with self.assertRaisesRegex(ValueError, "BOARD_MANAGED_SAFETY"):
-            validate_safe_defaults(path)
+            validate_production_defaults(path)
 
     def test_rejects_an_enabled_usb_serial_arm(self):
         path = self.write_defaults({
             "CONFIG_BZM_1002_USB_SERIAL_ARM": "y",
         })
         with self.assertRaisesRegex(ValueError, "USB_SERIAL_ARM"):
-            validate_safe_defaults(path)
+            validate_production_defaults(path)
 
-    def test_rejects_an_enabled_stage6_ramp(self):
+    def test_requires_the_qualified_engine_ramp(self):
         path = self.write_defaults({
-            "CONFIG_BZM_1002_STAGE6_BALANCED_RAMP": "y",
+            "CONFIG_BZM_1002_STAGE6_BALANCED_RAMP": None,
         })
         with self.assertRaisesRegex(ValueError, "STAGE6_BALANCED_RAMP"):
-            validate_safe_defaults(path)
+            validate_production_defaults(path)
 
-    def test_rejects_an_enabled_stage7_mining_gate(self):
+    def test_requires_automatic_mining_support(self):
         path = self.write_defaults({
-            "CONFIG_BZM_1002_STAGE7_MINING": "y",
+            "CONFIG_BZM_1002_STAGE7_MINING": None,
         })
         with self.assertRaisesRegex(ValueError, "STAGE7_MINING"):
-            validate_safe_defaults(path)
+            validate_production_defaults(path)
 
     def test_rejects_relaxed_default_pll_lock_confirmation(self):
         path = self.write_defaults({
             "CONFIG_BZM_1002_PLL_LOCK_CONFIRM_SAMPLES": "3",
         })
         with self.assertRaisesRegex(ValueError, "PLL_LOCK_CONFIRM_SAMPLES"):
-            validate_safe_defaults(path)
+            validate_production_defaults(path)
 
     def test_rejects_a_missing_explicit_safety_default(self):
         path = self.write_defaults(
             omitted=("CONFIG_BZM_1002_POWERED_VALIDATION",)
         )
-        with self.assertRaisesRegex(ValueError, "missing explicit safe default"):
-            validate_safe_defaults(path)
+        with self.assertRaisesRegex(ValueError, "missing explicit production default"):
+            validate_production_defaults(path)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,6 @@
 #include "asic_reset.h"
 #include "asic_result_task.h"
 #include "bap/bap.h"
-#include "bzm_validation_console.h"
 #include "bzm_validation_runtime.h"
 #include "connect.h"
 #include "create_jobs_task.h"
@@ -137,23 +136,14 @@ void app_main(void)
     if (system_init_ret == ESP_OK) {
         if (GLOBAL_STATE.DEVICE_CONFIG.bonanza_bridge) {
             /*
-             * Board 1002 never enters the legacy automatic voltage/mining
-             * path. The staged runtime first proves OFF_SAFE and is the only
-             * owner allowed to energize or dispatch work.
+             * Board 1002 uses its fixed-profile production controller instead
+             * of the legacy tunable voltage path.
              */
             esp_err_t runtime_err = bzm_validation_runtime_init(&GLOBAL_STATE);
             if (runtime_err != ESP_OK) {
                 ESP_LOGE(TAG, "Bonanza safe-off runtime initialization failed: %s", esp_err_to_name(runtime_err));
                 system_init_ret = runtime_err;
             }
-#ifdef CONFIG_BZM_1002_USB_SERIAL_ARM
-            if (runtime_err == ESP_OK) {
-                esp_err_t console_err = bzm_validation_console_init();
-                if (console_err != ESP_OK) {
-                    ESP_LOGE(TAG, "Bonanza USB arm console failed closed: %s", esp_err_to_name(console_err));
-                }
-            }
-#endif
         } else {
             if (xTaskCreate(POWER_MANAGEMENT_task, "power management", 8192, (void *) &GLOBAL_STATE, 10, NULL) != pdPASS) {
                 ESP_LOGE(TAG, "Error creating power management task");
@@ -196,9 +186,9 @@ void app_main(void)
     queue_init(&GLOBAL_STATE.stratum_queue);
 
     if (GLOBAL_STATE.DEVICE_CONFIG.bonanza_bridge) {
-        bzm_validation_runtime_mining_stack_ready();
-        ESP_LOGI(TAG, "Bonanza boot remains staged; use the validation API to "
-                      "advance from OFF_SAFE");
+        if (!bzm_validation_runtime_mining_stack_ready()) {
+            ESP_LOGE(TAG, "Bonanza remained safe-off after automatic startup failure");
+        }
         return;
     }
 

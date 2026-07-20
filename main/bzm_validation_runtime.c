@@ -77,12 +77,14 @@ typedef struct
     bzm_local_arm_t local_arm;
 } bzm_runtime_state_t;
 
-static const char * TAG = "bzm_validation";
+static const char * TAG = "bzm_controller";
 static bzm_runtime_state_t RUNTIME = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
 };
 
 static bzm_bringup_telemetry_policy_t telemetry_policy(void);
+static bool runtime_is_holding_locked(void);
+static bzm_runtime_health_result_t sample_runtime_health_locked(void);
 
 static bzm_running_evidence_config_t running_evidence_config(void)
 {
@@ -242,6 +244,67 @@ static bool start_mining_tasks_locked(void)
         return false;
     }
     RUNTIME.mining_tasks_started = true;
+    return true;
+}
+
+static bool start_production_mining_locked(void)
+{
+    if (!RUNTIME.initialized || !RUNTIME.mining_stack_ready ||
+        RUNTIME.supervisor.owner != BZM_SUPERVISOR_OWNER_NONE ||
+        RUNTIME.supervisor.fault_latched) {
+        return false;
+    }
+
+    close_dispatch_locked();
+    reset_running_evidence_locked(true);
+    bzm_ch2_confirmation_init(&RUNTIME.ch2_confirmation);
+    bzm_pll_lock_confirmation_init(&RUNTIME.pll_lock_confirmation);
+
+    const uint32_t lease_ms = RUNTIME.supervisor.config.maximum_lease_ms;
+    const uint64_t started_ms = now_ms();
+    uint64_t execution_deadline_ms = 0;
+    if (!bzm_lease_guard_make_deadline(started_ms, lease_ms,
+                                       &execution_deadline_ms)) {
+        return false;
+    }
+    atomic_store_explicit(&RUNTIME.execution_deadline_ms,
+                          execution_deadline_ms, memory_order_release);
+    /* The local controller is the production authority for this locked
+     * profile. The fresh arm is internal and cannot be supplied remotely. */
+    bool completed = bzm_supervisor_request_validation(
+        &RUNTIME.supervisor, BZM_STAGE_RUNNING, true, true, lease_ms,
+        started_ms);
+    atomic_store_explicit(&RUNTIME.execution_deadline_ms, 0,
+                          memory_order_release);
+
+    if (completed && runtime_is_holding_locked()) {
+        bzm_runtime_health_result_t health = sample_runtime_health_locked();
+        if (health.status == BZM_RUNTIME_HEALTH_BAD) {
+            close_dispatch_locked();
+            (void)bzm_supervisor_latch_fault(
+                &RUNTIME.supervisor, (uint32_t)health.fault, health.detail);
+            completed = false;
+        }
+    }
+    if (!completed ||
+        RUNTIME.supervisor.owner != BZM_SUPERVISOR_OWNER_MINING ||
+        !start_mining_tasks_locked()) {
+        if (!RUNTIME.supervisor.fault_latched) {
+            (void)bzm_supervisor_latch_fault(
+                &RUNTIME.supervisor, 0x1006,
+                "production mining task stack could not start");
+        }
+        sync_dispatch_locked();
+        return false;
+    }
+
+    RUNTIME.running_evidence_started_at_ms = now_ms();
+    RUNTIME.running_evidence_monitoring = true;
+    RUNTIME.global_state->ASIC_initalized = true;
+    RUNTIME.global_state->SYSTEM_MODULE.mining_paused = false;
+    (void)evaluate_running_evidence_locked(
+        RUNTIME.running_evidence_started_at_ms);
+    sync_dispatch_locked();
     return true;
 }
 
@@ -839,11 +902,22 @@ static void runtime_monitor_task(void * parameter)
         vTaskDelay(pdMS_TO_TICKS(BZM_MONITOR_PERIOD_MS));
         pthread_mutex_lock(&RUNTIME.lock);
         uint64_t current_ms = now_ms();
+        /* This is an internal controller watchdog, not an operator lease.
+         * Renew it locally while production mining is healthy; the RP2040
+         * bridge retains its shorter independent output lease below. */
+        if (RUNTIME.supervisor.owner == BZM_SUPERVISOR_OWNER_MINING &&
+            RUNTIME.supervisor.lease_deadline_ms > current_ms &&
+            RUNTIME.supervisor.lease_deadline_ms - current_ms <=
+                RUNTIME.supervisor.config.maximum_lease_ms / 2U) {
+            (void)bzm_supervisor_heartbeat(
+                &RUNTIME.supervisor,
+                RUNTIME.supervisor.config.maximum_lease_ms, current_ms);
+        }
         if (RUNTIME.supervisor.lease_deadline_ms != 0 && current_ms >= RUNTIME.supervisor.lease_deadline_ms) {
             close_dispatch_locked();
         }
         if (!bzm_supervisor_tick(&RUNTIME.supervisor, current_ms)) {
-            ESP_LOGE(TAG, "validation lease expired; safe-off requested");
+            ESP_LOGE(TAG, "local controller lease expired; safe-off requested");
         }
 
         bool holding = runtime_is_holding_locked();
@@ -975,17 +1049,25 @@ esp_err_t bzm_validation_runtime_init(GlobalState * global_state)
     pthread_mutex_lock(&RUNTIME.lock);
     RUNTIME.monitor_running = true;
     pthread_mutex_unlock(&RUNTIME.lock);
-    ESP_LOGI(TAG, "Bonanza staged runtime initialized at OFF_SAFE");
+    ESP_LOGI(TAG, "Bonanza production controller initialized at safe-off");
     return ESP_OK;
 }
 
-void bzm_validation_runtime_mining_stack_ready(void)
+bool bzm_validation_runtime_mining_stack_ready(void)
 {
     pthread_mutex_lock(&RUNTIME.lock);
+    bool started = false;
     if (RUNTIME.active && RUNTIME.initialized) {
         RUNTIME.mining_stack_ready = true;
+        started = start_production_mining_locked();
     }
     pthread_mutex_unlock(&RUNTIME.lock);
+    if (started) {
+        ESP_LOGI(TAG, "Bonanza reached MINING on the fixed production profile");
+    } else {
+        ESP_LOGE(TAG, "Bonanza automatic startup failed closed");
+    }
+    return started;
 }
 
 bool bzm_validation_runtime_active(void)

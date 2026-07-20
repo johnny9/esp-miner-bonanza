@@ -227,7 +227,9 @@ uint8_t BZM_init(GlobalState * state)
     }
     bzm_reactor_config_t config = {
         .engine_count = engine_count,
-        .timestamp_count = 16,
+        /* BIRDS leaves each independent engine job enough ntime budget to
+         * remain productive throughout the paced 236-engine rotation. */
+        .timestamp_count = 60,
         .lead_zeros = CONFIG_BZM_1002_STAGE7_LEAD_ZEROS,
         .nonce_offset = BZM_NONCE_GAP_1002,
         .enhanced_mode = true,

@@ -16,7 +16,7 @@ EXPECTED = {
     "selftest": ("u16", "0"),
 }
 
-EXPECTED_SAFE_DEFAULTS = {
+EXPECTED_PRODUCTION_DEFAULTS = {
     "CONFIG_ESP_CONSOLE_UART_DEFAULT": None,
     "CONFIG_ESP_CONSOLE_USB_CDC": None,
     "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG": "y",
@@ -24,23 +24,23 @@ EXPECTED_SAFE_DEFAULTS = {
     "CONFIG_ESP_CONSOLE_NONE": None,
     "CONFIG_ESP_CONSOLE_SECONDARY_NONE": "y",
     "CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG": None,
-    "CONFIG_BZM_1002_MAX_STAGE": "0",
-    "CONFIG_BZM_1002_POWERED_VALIDATION": None,
+    "CONFIG_BZM_1002_MAX_STAGE": "7",
+    "CONFIG_BZM_1002_POWERED_VALIDATION": "y",
     "CONFIG_BZM_1002_LAB_VALIDATION": None,
     "CONFIG_BZM_1002_ALLOW_ESP_ONLY_KILL_IN_LAB": None,
-    "CONFIG_BZM_1002_BOARD_MANAGED_SAFETY": None,
+    "CONFIG_BZM_1002_BOARD_MANAGED_SAFETY": "y",
     "CONFIG_BZM_1002_USB_SERIAL_ARM": None,
-    "CONFIG_BZM_1002_STAGE6_BALANCED_RAMP": None,
-    "CONFIG_BZM_1002_STAGE7_MINING": None,
-    "CONFIG_BZM_1002_STAGE7_PROOF_TIMEOUT_SECONDS": "15",
+    "CONFIG_BZM_1002_STAGE6_BALANCED_RAMP": "y",
+    "CONFIG_BZM_1002_STAGE7_MINING": "y",
+    "CONFIG_BZM_1002_STAGE7_PROOF_TIMEOUT_SECONDS": "90",
     "CONFIG_BZM_1002_STAGE7_MIN_VALID_RESULTS": "1",
-    "CONFIG_BZM_1002_STAGE7_MAX_LOCAL_REJECTIONS": "1",
-    "CONFIG_BZM_1002_STAGE7_ALLOW_MAPPING_RECOVERY": None,
-    "CONFIG_BZM_1002_STAGE7_MAX_MAPPING_REJECTIONS": "2",
+    "CONFIG_BZM_1002_STAGE7_MAX_LOCAL_REJECTIONS": "16",
+    "CONFIG_BZM_1002_STAGE7_ALLOW_MAPPING_RECOVERY": "y",
+    "CONFIG_BZM_1002_STAGE7_MAX_MAPPING_REJECTIONS": "16",
     "CONFIG_BZM_1002_STAGE7_MIN_NONCE_DIFFICULTY": "1",
     "CONFIG_BZM_1002_STAGE7_LEAD_ZEROS": "36",
-    "CONFIG_BZM_1002_STAGE7_ALLOW_PARSER_REALIGN": None,
-    "CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_MAX_DISCARDS": "32",
+    "CONFIG_BZM_1002_STAGE7_ALLOW_PARSER_REALIGN": "y",
+    "CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_MAX_DISCARDS": "64",
     "CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_CLEAN_WINDOWS": "2",
     "CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_MAX_WINDOWS": "6",
     "CONFIG_BZM_1002_STAGE7_PARSER_REALIGN_MAX_EVENTS": "2",
@@ -84,7 +84,7 @@ def validate(path: Path) -> None:
         raise ValueError("; ".join(errors))
 
 
-def validate_safe_defaults(path: Path) -> None:
+def validate_production_defaults(path: Path) -> None:
     values: dict[str, str | None] = {}
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
@@ -100,9 +100,9 @@ def validate_safe_defaults(path: Path) -> None:
         values[key] = value
 
     errors = []
-    for key, expected in EXPECTED_SAFE_DEFAULTS.items():
+    for key, expected in EXPECTED_PRODUCTION_DEFAULTS.items():
         if key not in values:
-            errors.append(f"{key}: missing explicit safe default")
+            errors.append(f"{key}: missing explicit production default")
         elif values[key] != expected:
             rendered = "not set" if expected is None else expected
             errors.append(
@@ -125,11 +125,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         Path(args[1]) if len(args) == 2 else root / "sdkconfig.defaults"
     )
     validate(path)
-    validate_safe_defaults(defaults_path)
+    validate_production_defaults(defaults_path)
 
     print(
         "Bitaxe 1002 factory configuration and sdkconfig defaults "
-        "match the fail-closed runtime profile"
+        "match the automatic fixed-profile production configuration"
     )
     return 0
 

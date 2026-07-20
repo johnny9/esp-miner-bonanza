@@ -59,11 +59,11 @@ esp_err_t bzm_validation_runtime_init(GlobalState * global_state);
 bool bzm_validation_runtime_active(void);
 
 /*
- * Called once after the network-facing mining queue exists. RUNNING remains
- * BLOCKED until this hand-off, so validation can never start tasks against an
- * uninitialized queue.
+ * Called once after the network-facing mining queue exists. The production
+ * controller performs the complete fixed-profile startup and starts the
+ * normal mining tasks without an operator request.
  */
-void bzm_validation_runtime_mining_stack_ready(void);
+bool bzm_validation_runtime_mining_stack_ready(void);
 
 /*
  * Powered requests require the exact BZM_RUNTIME_POWER_CONFIRMATION string

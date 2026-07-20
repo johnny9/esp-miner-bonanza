@@ -185,7 +185,16 @@ def sample_device(report: Report, base_url: str, duration: int,
                   interval: float) -> None:
     deadline = time.monotonic() + duration
     while True:
-        info = get_info(base_url)
+        try:
+            info = get_info(base_url)
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            sample = {"time": time.time(), "requestError": str(exc)}
+            report.samples.append(sample)
+            print("[SAMPLE] " + json.dumps(sample, sort_keys=True), flush=True)
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+            continue
         health = info.get("asicHealth") or {}
         sample = {
             "time": time.time(),
@@ -212,10 +221,14 @@ def sample_device(report: Report, base_url: str, duration: int,
 
 
 def check_sample_deltas(report: Report, min_hashrate_ghs: float) -> None:
-    if len(report.samples) < 2:
+    valid_samples = [item for item in report.samples if "requestError" not in item]
+    request_errors = len(report.samples) - len(valid_samples)
+    report.check("API sampling continuity", request_errors == 0,
+                 f"successful={len(valid_samples)} transientErrors={request_errors}")
+    if len(valid_samples) < 2:
         report.check("live samples", False, "fewer than two samples")
         return
-    first, last = report.samples[0], report.samples[-1]
+    first, last = valid_samples[0], valid_samples[-1]
     valid_delta = (last.get("locallyValidResults") or 0) - (first.get("locallyValidResults") or 0)
     report.check("locally valid results increase", valid_delta > 0, f"delta={valid_delta}")
     report.check("no duplicate result delivery",
@@ -224,11 +237,11 @@ def check_sample_deltas(report: Report, min_hashrate_ghs: float) -> None:
     report.check("no dispatch failures",
                  (last.get("dispatchFailures") or 0) == (first.get("dispatchFailures") or 0),
                  f"delta={(last.get('dispatchFailures') or 0) - (first.get('dispatchFailures') or 0)}")
-    rates = [float(item.get("hashRate") or 0) for item in report.samples[len(report.samples) // 2:]]
+    rates = [float(item.get("hashRate") or 0) for item in valid_samples[len(valid_samples) // 2:]]
     average = sum(rates) / len(rates)
     report.check("sustained local hashrate", average >= min_hashrate_ghs,
                  f"second-half average={average:.2f} GH/s floor={min_hashrate_ghs:.2f} GH/s")
-    ages = [float(item.get("workAgeSeconds") or 0) for item in report.samples]
+    ages = [float(item.get("workAgeSeconds") or 0) for item in valid_samples]
     report.check("pool work remains live", max(ages) <= 90,
                  f"age range={min(ages):.1f}..{max(ages):.1f}s")
 
@@ -330,9 +343,16 @@ def main() -> int:
         deadline = time.monotonic() + args.boot_timeout
         while (info.get("asicHealth") or {}).get("lifecycle") not in {"MINING", "FAULT"} and time.monotonic() < deadline:
             time.sleep(2)
-            info = get_info(base_url)
+            try:
+                info = get_info(base_url)
+            except (OSError, ValueError, urllib.error.URLError):
+                continue
         health_check(report, info, require_mining=True, max_work_age=args.max_work_age)
-        check_ui(report, base_url)
+        try:
+            check_ui(report, base_url)
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            report.check("AxeOS production health labels", False,
+                         f"UI request failed: {exc}")
         sample_device(report, base_url, args.soak_seconds, args.sample_interval)
         check_sample_deltas(report, args.min_hashrate_ghs)
 

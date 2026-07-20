@@ -690,6 +690,24 @@ static bzm_stage_result_t runtime_force_safe_off(void * context)
     }
 
     RUNTIME.bridge_status_valid = BZM_bridge_get_safety_status(&RUNTIME.bridge_status) == ESP_OK && RUNTIME.bridge_status.valid;
+    if (electrical_safe && RUNTIME.bridge_status_valid &&
+        RUNTIME.bridge_status.fault != BZM_BRIDGE_SAFETY_FAULT_NONE &&
+        bzm_bridge_safety_status_allows_fault_clear(&RUNTIME.bridge_status)) {
+        /* The RP2040 intentionally retains lease/trip faults across an ESP
+         * reboot. Clear that latch only after this boot has independently
+         * forced safe bridge outputs and proved the TPS rail off and
+         * discharged, then evaluate the returned status from scratch. */
+        bzm_bridge_safety_status_t cleared = {0};
+        esp_err_t clear_err = BZM_bridge_clear_safety_fault(&cleared);
+        commands_ok = clear_err == ESP_OK && commands_ok;
+        RUNTIME.bridge_status = cleared;
+        RUNTIME.bridge_status_valid = clear_err == ESP_OK && cleared.valid;
+        if (RUNTIME.bridge_status_valid) {
+            ESP_LOGW(TAG, "Cleared retained bridge safety fault after verified electrical safe-off");
+        } else {
+            ESP_LOGE(TAG, "Retained bridge safety fault clear failed: %s", esp_err_to_name(clear_err));
+        }
+    }
     const uint16_t required_safe_evidence =
         BZM_BRIDGE_SAFETY_EVIDENCE_OUTPUTS_SAFE | BZM_BRIDGE_SAFETY_EVIDENCE_TRIP_CLEAR | BZM_BRIDGE_SAFETY_EVIDENCE_FAULT_CLEAR;
     bool bridge_safe = RUNTIME.bridge_status_valid && RUNTIME.bridge_status.state == BZM_BRIDGE_SAFETY_STATE_SAFE_OFF &&
@@ -707,6 +725,7 @@ static bzm_stage_result_t runtime_force_safe_off(void * context)
                  "operation=0x%02x bridge=%s",
                  commands_ok ? "ok" : "bad", pgood ? "high" : "low", power.read_vout, power.operation,
                  bridge_safe ? "safe" : (RUNTIME.bridge_status_valid ? "unsafe" : "unavailable"));
+        ESP_LOGE(TAG, "%s", detail);
         return bzm_validation_result(BZM_CHECK_BAD, BZM_VALIDATION_CODE_SAFE_OFF_FAILED, detail);
     }
 

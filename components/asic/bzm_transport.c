@@ -703,7 +703,15 @@ bool bzm_transport_program_work(const bzm_work_t * work, bzm_register_writer_t w
         return false;
     }
 
-    uint8_t zero_count = work->lead_zeros > 32 ? work->lead_zeros - 32 : 0;
+    /* ZEROS_TO_FIND is an inclusive count after the fixed 31-bit prefix:
+     * register value 4 emits hashes with 35 leading zeroes (difficulty 8),
+     * as confirmed by the device result cadence against accepted pool shares.
+     * Program 5 for the requested 36-bit/difficulty-16 filter. The register's
+     * maximum value remains sufficient for the no-result Stage-6 sentinel. */
+    uint8_t zero_count = work->lead_zeros > 31
+        ? (uint8_t)(work->lead_zeros - 31)
+        : 0;
+    if (zero_count > 32) zero_count = 32;
     uint8_t timestamp_control = work->timestamp_count | BZM_TIMESTAMP_AUTO_CLOCK_UNGATE;
     /* BIRDS/cgminer hands the ASIC the final three header words in the
      * per-word-swapped work->data representation. Keep bzm_work_t in host

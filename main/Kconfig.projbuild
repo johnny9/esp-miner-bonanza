@@ -68,10 +68,11 @@ menu "Bitaxe Configuration"
             default 36
             help
                 Program every Bonanza engine to report only hashes with at
-                least this many leading zero bits. The 36-bit default reduces
-                result UART traffic by four times relative to the historical
-                34-bit setting while retaining an expected proof difficulty
-                near 16. Raising this value reduces traffic and proof rate;
+                least this many leading zero bits. Bonanza's inclusive wire
+                encoding uses register value 5 for the 36-bit default, which
+                reduces result UART traffic by four times relative to the
+                historical 34-bit setting while retaining an expected proof
+                difficulty near 16. Raising this value reduces traffic and proof rate;
                 lowering it increases both. Parser loss remains BAD.
 
         config BZM_1002_DISPATCH_GAP_US

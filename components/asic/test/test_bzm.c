@@ -522,6 +522,8 @@ TEST_CASE("BZM transport programs ordered enhanced work and flush jobs",
     TEST_ASSERT_TRUE(bzm_transport_program_work(
         &work, capture_register, &capture));
     TEST_ASSERT_EQUAL_UINT32(16, capture.count);
+    TEST_ASSERT_EQUAL_HEX8(0x49, capture.writes[0].offset);
+    TEST_ASSERT_EQUAL_UINT8(5, capture.writes[0].data[0]);
     TEST_ASSERT_EQUAL_HEX8(0x90, capture.writes[1].data[0]);
     static const uint8_t expected_merkle_residue[] = {0x23, 0x22, 0x21, 0x20};
     static const uint8_t expected_ntime[] = {0x65, 0x01, 0x02, 0x03};

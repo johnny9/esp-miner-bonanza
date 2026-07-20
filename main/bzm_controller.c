@@ -213,11 +213,25 @@ static void publish_driver_health_locked(asic_driver_lifecycle_t lifecycle)
             ? RUNTIME.bridge_info.protocol_minor : 0,
         .bridge_compatible = RUNTIME.bridge_info_valid &&
             RUNTIME.bridge_status_valid &&
-            bzm_bridge_info_supports_safety(&RUNTIME.bridge_info) &&
+            bzm_bridge_info_supports_data_link(&RUNTIME.bridge_info) &&
             bridge_control_contract_compatible(&RUNTIME.bridge_status),
         .parser_discarded_bytes = RUNTIME.parser_sample_valid
             ? RUNTIME.parser_sample.discarded_bytes : 0,
         .parser_recoveries = RUNTIME.parser_recovery_count,
+        .address_mark_realignments = RUNTIME.parser_sample_valid
+            ? RUNTIME.parser_sample.address_mark_realignments : 0,
+        .transport_crc_failures = RUNTIME.parser_sample_valid
+            ? RUNTIME.parser_sample.transport_crc_failures : 0,
+        .transport_sequence_gaps = RUNTIME.parser_sample_valid
+            ? RUNTIME.parser_sample.transport_sequence_gaps : 0,
+        .transport_duplicate_frames = RUNTIME.parser_sample_valid
+            ? RUNTIME.parser_sample.transport_duplicate_frames : 0,
+        .transport_discarded_wire_bytes = RUNTIME.parser_sample_valid
+            ? RUNTIME.parser_sample.transport_discarded_wire_bytes : 0,
+        .bridge_pio_fifo_overflows = RUNTIME.parser_sample_valid
+            ? RUNTIME.parser_sample.bridge_pio_fifo_overflows : 0,
+        .bridge_software_ring_overflows = RUNTIME.parser_sample_valid
+            ? RUNTIME.parser_sample.bridge_software_ring_overflows : 0,
         .mapped_results = running.mapped_results,
         .locally_valid_results = running.locally_valid_results,
         .mapping_rejections = running.mapping_rejections,
@@ -620,7 +634,7 @@ static bool bridge_has_independent_kill(const bzm_bridge_safety_status_t * statu
 static void refresh_bridge_evidence_locked(void)
 {
     RUNTIME.bridge_info_valid =
-        BZM_bridge_get_info(&RUNTIME.bridge_info) == ESP_OK && bzm_bridge_info_supports_safety(&RUNTIME.bridge_info);
+        BZM_bridge_get_info(&RUNTIME.bridge_info) == ESP_OK && bzm_bridge_info_supports_data_link(&RUNTIME.bridge_info);
     RUNTIME.bridge_status_valid =
         RUNTIME.bridge_info_valid && BZM_bridge_get_safety_status(&RUNTIME.bridge_status) == ESP_OK && RUNTIME.bridge_status.valid;
     RUNTIME.supervisor.config.independent_kill_available =
@@ -696,10 +710,10 @@ static bzm_stage_result_t runtime_force_safe_off(void * context)
 static bzm_stage_result_t run_controls(GlobalState * state)
 {
     bzm_bridge_safety_status_t status;
-    if (BZM_bridge_get_info(&RUNTIME.bridge_info) != ESP_OK || !bzm_bridge_info_supports_safety(&RUNTIME.bridge_info)) {
+    if (BZM_bridge_get_info(&RUNTIME.bridge_info) != ESP_OK || !bzm_bridge_info_supports_data_link(&RUNTIME.bridge_info)) {
         RUNTIME.bridge_info_valid = false;
         return bzm_validation_result(BZM_CHECK_BLOCKED, BZM_VALIDATION_CODE_NOT_IMPLEMENTED,
-                                     "bridge protocol 1.1 safety commands are required");
+                                     "bridge protocol 1.2 safety and protected data transport are required");
     }
     RUNTIME.bridge_info_valid = true;
 

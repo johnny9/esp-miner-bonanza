@@ -29,6 +29,13 @@ typedef struct
     uint32_t unsolicited_noop_frames;
     uint32_t invalid_noop_frames;
     uint32_t telemetry_decode_failures;
+    uint32_t address_mark_realignments;
+    uint32_t transport_crc_failures;
+    uint32_t transport_sequence_gaps;
+    uint32_t transport_duplicate_frames;
+    uint32_t transport_discarded_wire_bytes;
+    uint32_t bridge_pio_fifo_overflows;
+    uint32_t bridge_software_ring_overflows;
     size_t buffered_bytes;
     size_t queued_results;
     uint8_t recent_discarded_bytes[BZM_FRAME_PARSER_DISCARD_TRACE_SIZE];
@@ -61,6 +68,8 @@ typedef struct
     uint32_t unsolicited_noop_frames;
     uint32_t invalid_noop_frames;
     uint32_t telemetry_decode_failures;
+    bool address_mark_synchronized;
+    uint32_t address_mark_realignments;
 } bzm_serial_io_state_t;
 
 typedef struct
@@ -112,6 +121,11 @@ bool bzm_serial_transport_init(bzm_serial_transport_t * transport);
 void bzm_serial_transport_deinit(bzm_serial_transport_t * transport);
 size_t bzm_serial_transport_ingest_bytes(bzm_serial_transport_t * transport, const uint8_t * data, size_t data_length,
                                          uint64_t timestamp_us);
+size_t bzm_serial_transport_ingest_marked(bzm_serial_transport_t *transport,
+                                          const uint8_t *data,
+                                          const uint8_t *ninth_bits,
+                                          size_t data_length,
+                                          uint64_t timestamp_us);
 size_t bzm_serial_poll(bzm_serial_transport_t * transport, uint16_t timeout_ms);
 /* Testable core of bzm_serial_poll. After the first bounded wait it drains
  * every byte already queued by the UART driver, up to a guard larger than the

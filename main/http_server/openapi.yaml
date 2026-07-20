@@ -145,6 +145,13 @@ components:
         - bridgeCompatible
         - parserDiscardedBytes
         - parserRecoveries
+        - addressMarkRealignments
+        - transportCrcFailures
+        - transportSequenceGaps
+        - transportDuplicateFrames
+        - transportDiscardedWireBytes
+        - bridgePioFifoOverflows
+        - bridgeSoftwareRingOverflows
         - mappedResults
         - locallyValidResults
         - mappingRejections
@@ -208,6 +215,27 @@ components:
           type: number
         parserRecoveries:
           type: number
+        addressMarkRealignments:
+          type: number
+          description: ASIC ninth-bit address marks used to discard a partial prior frame
+        transportCrcFailures:
+          type: number
+          description: Bridge-to-ESP envelopes rejected by CRC
+        transportSequenceGaps:
+          type: number
+          description: Missing or reordered bridge-to-ESP envelopes
+        transportDuplicateFrames:
+          type: number
+          description: Duplicate envelopes discarded before ASIC parsing
+        transportDiscardedWireBytes:
+          type: number
+          description: Data-UART bytes discarded while resynchronizing the protected envelope
+        bridgePioFifoOverflows:
+          type: number
+          description: ASIC receive FIFO stalls reported by the bridge
+        bridgeSoftwareRingOverflows:
+          type: number
+          description: ASIC words dropped because the bridge receive ring was full
         mappedResults:
           type: number
           description: Results attributed to retained engine work

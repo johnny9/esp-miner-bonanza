@@ -45,6 +45,13 @@ typedef struct {
 
     uint64_t parser_discarded_bytes;
     uint64_t parser_recoveries;
+    uint64_t address_mark_realignments;
+    uint64_t transport_crc_failures;
+    uint64_t transport_sequence_gaps;
+    uint64_t transport_duplicate_frames;
+    uint64_t transport_discarded_wire_bytes;
+    uint64_t bridge_pio_fifo_overflows;
+    uint64_t bridge_software_ring_overflows;
     uint64_t mapped_results;
     uint64_t locally_valid_results;
     uint64_t mapping_rejections;

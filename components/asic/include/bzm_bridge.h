@@ -26,6 +26,7 @@
 
 #define BZM_BRIDGE_SAFETY_PROTOCOL_MAJOR 1
 #define BZM_BRIDGE_SAFETY_PROTOCOL_MINOR 1
+#define BZM_BRIDGE_DATA_LINK_PROTOCOL_MINOR 2
 #define BZM_BRIDGE_SAFETY_STATUS_SCHEMA_VERSION 0x01
 #define BZM_BRIDGE_SAFETY_STATUS_LENGTH 17
 
@@ -132,6 +133,7 @@ esp_err_t bzm_bridge_decode_info(const uint8_t *payload,
                                  size_t payload_length,
                                  bzm_bridge_info_t *info);
 bool bzm_bridge_info_supports_safety(const bzm_bridge_info_t *info);
+bool bzm_bridge_info_supports_data_link(const bzm_bridge_info_t *info);
 /* Pure protocol decoder: requires the exact schema-1 17-byte payload. */
 esp_err_t bzm_bridge_decode_safety_status(
     const uint8_t *payload, size_t payload_length,

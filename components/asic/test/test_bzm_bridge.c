@@ -105,12 +105,17 @@ TEST_CASE("Bonanza bridge decodes bounded version information",
         bad_character, sizeof(bad_character), &info));
 
     TEST_ASSERT_TRUE(bzm_bridge_info_supports_safety(&info));
+    TEST_ASSERT_TRUE(bzm_bridge_info_supports_data_link(&info));
+    info.protocol_minor = BZM_BRIDGE_SAFETY_PROTOCOL_MINOR;
+    TEST_ASSERT_TRUE(bzm_bridge_info_supports_safety(&info));
+    TEST_ASSERT_FALSE(bzm_bridge_info_supports_data_link(&info));
     info.protocol_minor = BZM_BRIDGE_SAFETY_PROTOCOL_MINOR - 1;
     TEST_ASSERT_FALSE(bzm_bridge_info_supports_safety(&info));
     info.protocol_minor = BZM_BRIDGE_SAFETY_PROTOCOL_MINOR;
     info.protocol_major++;
     TEST_ASSERT_FALSE(bzm_bridge_info_supports_safety(&info));
     TEST_ASSERT_FALSE(bzm_bridge_info_supports_safety(NULL));
+    TEST_ASSERT_FALSE(bzm_bridge_info_supports_data_link(NULL));
 }
 
 TEST_CASE("Bonanza bridge decodes coherent safety status evidence",

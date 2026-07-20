@@ -66,6 +66,9 @@ bool bzm_frame_parser_cancel_register(bzm_frame_parser_t * parser, uint8_t asic_
 
 size_t bzm_frame_parser_feed(bzm_frame_parser_t * parser, const uint8_t * data, size_t data_length, uint64_t timestamp_us);
 size_t bzm_frame_parser_pending_bytes(const bzm_frame_parser_t * parser);
+/* Discard a known-incomplete prefix when an out-of-band ASIC address mark
+ * proves that the next byte begins a new frame. */
+size_t bzm_frame_parser_discard_pending(bzm_frame_parser_t *parser);
 /* Copy the most recent discarded bytes in chronological order. */
 size_t bzm_frame_parser_recent_discards(const bzm_frame_parser_t * parser, uint8_t * output, size_t capacity);
 

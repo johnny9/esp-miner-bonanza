@@ -156,6 +156,20 @@ static void system_api_add_asic_health(cJSON *root, GlobalState *g)
                             (double)health.parser_discarded_bytes);
     cJSON_AddNumberToObject(object, "parserRecoveries",
                             (double)health.parser_recoveries);
+    cJSON_AddNumberToObject(object, "addressMarkRealignments",
+                            (double)health.address_mark_realignments);
+    cJSON_AddNumberToObject(object, "transportCrcFailures",
+                            (double)health.transport_crc_failures);
+    cJSON_AddNumberToObject(object, "transportSequenceGaps",
+                            (double)health.transport_sequence_gaps);
+    cJSON_AddNumberToObject(object, "transportDuplicateFrames",
+                            (double)health.transport_duplicate_frames);
+    cJSON_AddNumberToObject(object, "transportDiscardedWireBytes",
+                            (double)health.transport_discarded_wire_bytes);
+    cJSON_AddNumberToObject(object, "bridgePioFifoOverflows",
+                            (double)health.bridge_pio_fifo_overflows);
+    cJSON_AddNumberToObject(object, "bridgeSoftwareRingOverflows",
+                            (double)health.bridge_software_ring_overflows);
     cJSON_AddNumberToObject(object, "mappedResults",
                             (double)health.mapped_results);
     cJSON_AddNumberToObject(object, "locallyValidResults",

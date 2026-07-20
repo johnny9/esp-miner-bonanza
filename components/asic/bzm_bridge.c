@@ -115,6 +115,12 @@ bool bzm_bridge_info_supports_safety(const bzm_bridge_info_t *info)
            info->protocol_minor >= BZM_BRIDGE_SAFETY_PROTOCOL_MINOR;
 }
 
+bool bzm_bridge_info_supports_data_link(const bzm_bridge_info_t *info)
+{
+    return bzm_bridge_info_supports_safety(info) &&
+           info->protocol_minor >= BZM_BRIDGE_DATA_LINK_PROTOCOL_MINOR;
+}
+
 static void invalidate_safety_status(bzm_bridge_safety_status_t *status)
 {
     if (status == NULL) return;

@@ -108,15 +108,16 @@ menu "Bitaxe Configuration"
         config BZM_1002_PARSER_REALIGN_MAX_WINDOWS
             int "Maximum parser realignment windows"
             range 2 20
-            default 6
+            default 20
             help
                 Maximum 500 ms runtime-health observations allowed for one
-                realignment. Failure to settle by then is BAD.
+                realignment. Failure to settle within the bounded ten-second
+                window is BAD.
 
         config BZM_1002_PARSER_REALIGN_MAX_EVENTS
             int "Maximum discard bursts per parser realignment"
             range 1 20
-            default 6
+            default 20
             help
                 Maximum observations with new discarded bytes during one
                 unresolved realignment episode. A successfully realigned

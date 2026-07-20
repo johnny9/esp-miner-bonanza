@@ -627,6 +627,38 @@ TEST_CASE("BZM Stage 7 parser realignment lets a byte-bounded burst use its full
     TEST_ASSERT_EQUAL_UINT32(36, realign.accepted.discarded_bytes);
 }
 
+TEST_CASE("BZM Stage 7 parser realignment accepts the measured long byte-bounded episode",
+          "[asic][bzm][runtime-health]")
+{
+    bzm_serial_parser_stats_t baseline = {.emitted_frames = 10};
+    bzm_serial_parser_stats_t current = baseline;
+    bzm_parser_realign_t realign;
+    bzm_parser_realign_init(&realign, &baseline);
+
+    for (uint32_t observation = 0; observation < 11; ++observation) {
+        current.discarded_bytes += 5;
+        current.emitted_frames_at_last_discard = current.emitted_frames;
+        TEST_ASSERT_EQUAL(BZM_PARSER_REALIGN_PENDING,
+                          bzm_parser_realign_observe(&realign, &current,
+                                                     64, 2, 20, 20));
+    }
+    current.discarded_bytes += 3;
+    current.emitted_frames_at_last_discard = current.emitted_frames;
+    TEST_ASSERT_EQUAL(BZM_PARSER_REALIGN_PENDING,
+                      bzm_parser_realign_observe(&realign, &current,
+                                                 64, 2, 20, 20));
+
+    ++current.emitted_frames;
+    TEST_ASSERT_EQUAL(BZM_PARSER_REALIGN_PENDING,
+                      bzm_parser_realign_observe(&realign, &current,
+                                                 64, 2, 20, 20));
+    ++current.emitted_frames;
+    TEST_ASSERT_EQUAL(BZM_PARSER_REALIGN_RECOVERED,
+                      bzm_parser_realign_observe(&realign, &current,
+                                                 64, 2, 20, 20));
+    TEST_ASSERT_EQUAL_UINT32(58, realign.accepted.discarded_bytes);
+}
+
 #undef ASSERT_PARSER_DELTA
 
 TEST_CASE("BZM runtime health requires four fresh valid bounded ASIC samples", "[asic][bzm][runtime-health]")

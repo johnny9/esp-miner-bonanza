@@ -7,21 +7,28 @@
 
 #include "asic_result.h"
 #include "asic_work.h"
+#include "bzm_topology.h"
 
 #define BZM_CHIP_ID 0xB0A0U
 #define BZM_BAUD_RATE 5000000
 #define BZM_RESULT_FRAME_SIZE 8
 #define BZM_TDM_RESULT_FRAME_SIZE (BZM_RESULT_FRAME_SIZE + 2)
-#define BZM_MAX_ACTIVE_WORK 256
 #define BZM_MAX_ENGINE_COUNT 4096
 #define BZM_VERSION_VARIANTS 4
-#define BZM_NONCE_GAP_ENHANCED 0x28U
-#define BZM_ENGINE_ROWS 20
-#define BZM_ENGINE_COLUMNS 12
-#define BZM_ENGINES_PER_ASIC (BZM_ENGINE_ROWS * BZM_ENGINE_COLUMNS)
+/* Qualified on the Bitaxe 1002 at the Stage-7 0x04 engine profile. Seven
+ * independent hardware results reproduced their ASIC 34-bit filter exactly
+ * after subtracting 0x4c; the former 0x28 assumption reproduced none. */
+#define BZM_NONCE_GAP_1002 0x4cU
+#define BZM_ENGINE_ROWS BZM_TOPOLOGY_ROWS
+#define BZM_ENGINE_COLUMNS BZM_TOPOLOGY_COLUMNS
+#define BZM_ENGINE_GRID_COUNT BZM_TOPOLOGY_GRID_ENGINE_COUNT
+#define BZM_ENGINES_PER_ASIC BZM_TOPOLOGY_ENGINE_COUNT
+#define BZM_MAX_ACTIVE_WORK 256U
 #define BZM_CONTROL_ENGINE_ID 0xfff
-#define BZM_FIRST_ASIC_ID 0x42
-#define BZM_MAX_ASIC_COUNT 4
+/* 0xfa addresses the next unassigned ASIC during chain discovery. The BIRDS
+ * protocol uses 0xff for a write that every already-addressed ASIC consumes. */
+#define BZM_BROADCAST_ASIC 0xfaU
+#define BZM_ALL_ASICS 0xffU
 
 typedef struct {
     asic_work_t source;
@@ -59,6 +66,7 @@ bool bzm_result_decode(const uint8_t frame[BZM_RESULT_FRAME_SIZE],
 bool bzm_tdm_result_decode(
     const uint8_t frame[BZM_TDM_RESULT_FRAME_SIZE], uint64_t timestamp_us,
     bzm_raw_result_t *result);
+bool bzm_raw_result_has_valid_nonce(const bzm_raw_result_t *result);
 bool bzm_engine_physical_id(uint16_t logical_engine_id,
                             uint16_t *physical_engine_id);
 bool bzm_engine_logical_id(uint16_t physical_engine_id,

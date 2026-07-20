@@ -124,6 +124,7 @@ static const asic_driver_t DRIVERS[] = {
             .process_work = BZM_process_work,
             .set_max_baud = BZM_set_max_baud,
             .send_work = BZM_send_work,
+            .clear_work = BZM_clear_work,
             .read_temperature = BZM_read_temperature,
         },
     },

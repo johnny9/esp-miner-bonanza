@@ -297,9 +297,26 @@ static bool self_test_should_run()
 
 esp_err_t self_test_init(void * pvParameters)
 {
-    if (self_test_should_run()) {
-        GlobalState * GLOBAL_STATE = (GlobalState *) pvParameters;
+    GlobalState * GLOBAL_STATE = (GlobalState *) pvParameters;
 
+    /*
+     * The legacy self-test powers the rail before the Bonanza staged
+     * supervisor exists.  Board 1002 therefore uses only the explicit
+     * validation ladder; neither an NVS flag nor a held boot button may enter
+     * this path.
+     */
+    if (GLOBAL_STATE != NULL &&
+        GLOBAL_STATE->DEVICE_CONFIG.bonanza_bridge) {
+        if (nvs_config_get_bool(NVS_CONFIG_SELF_TEST) ||
+            gpio_get_level(CONFIG_GPIO_BUTTON_BOOT) == 0) {
+            ESP_LOGW(TAG,
+                     "Legacy self-test ignored on board 1002; use the staged validation API");
+        }
+        GLOBAL_STATE->SELF_TEST_MODULE.is_active = false;
+        return ESP_OK;
+    }
+
+    if (self_test_should_run()) {
         GLOBAL_STATE->SELF_TEST_MODULE.is_active = true;
         pthread_mutex_init(&GLOBAL_STATE->SELF_TEST_MODULE.nonce_measurement.lock, NULL);
         GLOBAL_STATE->DEVICE_CONFIG.family.asic.difficulty = DIFFICULTY;

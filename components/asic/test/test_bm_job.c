@@ -8,6 +8,7 @@
 #include "asic_result_handler.h"
 #include "bm_job_builder.h"
 #include "bm_result.h"
+#include "device_config.h"
 #include "mining_template.h"
 #include "sv2_mining_template.h"
 #include "unity.h"
@@ -482,6 +483,11 @@ TEST_CASE("ASIC driver table exposes operations without switch dispatch",
         TEST_ASSERT_NOT_NULL(driver->ops.init);
         TEST_ASSERT_NOT_NULL(driver->ops.process_work);
         TEST_ASSERT_NOT_NULL(driver->ops.send_work);
+        if (driver->id == BZM) {
+            TEST_ASSERT_NOT_NULL(driver->ops.clear_work);
+        } else {
+            TEST_ASSERT_NULL(driver->ops.clear_work);
+        }
     }
     TEST_ASSERT_NULL(asic_driver_for_id(99));
     TEST_ASSERT_NULL(asic_driver_at(asic_driver_count()));

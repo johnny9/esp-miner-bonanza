@@ -1,5 +1,6 @@
 #include "bzm_power.h"
 
+#include <math.h>
 #include <stddef.h>
 
 const bzm_tps546_profile_t BZM_TPS546_BIRDS_PROFILE = {
@@ -16,9 +17,9 @@ const bzm_tps546_profile_t BZM_TPS546_BIRDS_PROFILE = {
     .compensation_config = {0x13, 0x11, 0x8c, 0x1d, 0x06},
     .power_stage_config = 0x70,
     .telemetry_config = {0x03, 0x03, 0x03, 0x03, 0x03, 0x00},
-    .vout_command = 2.8f,
+    .vout_command = BZM_TPS546_FIXED_VOUT_V,
     .vout_trim = 0x0000,
-    .vout_max = 3.5f,
+    .vout_max = BZM_TPS546_MAX_VOUT_V,
     .vout_margin_high = 1.1f,
     .vout_margin_low = 0.90f,
     .vout_transition_rate = 0xe010,
@@ -51,6 +52,14 @@ const bzm_tps546_profile_t BZM_TPS546_BIRDS_PROFILE = {
     .toff_fall = 0,
 };
 
+bool bzm_power_voltage_is_allowed(float volts)
+{
+    return isfinite(volts) &&
+           (volts == 0.0f ||
+            fabsf(volts - BZM_TPS546_FIXED_VOUT_V) <=
+                BZM_TPS546_VOUT_TOLERANCE_V);
+}
+
 static void retain_first_error(esp_err_t candidate, esp_err_t *result)
 {
     if (*result == ESP_OK && candidate != ESP_OK) *result = candidate;
@@ -65,14 +74,17 @@ static esp_err_t power_down(const bzm_power_ops_t *ops, void *context)
     return result;
 }
 
-esp_err_t bzm_power_set_enabled(const bzm_power_ops_t *ops, void *context,
-                                bool enabled)
+static bool valid_ops(const bzm_power_ops_t *ops)
 {
-    if (ops == NULL || ops->set_5v_enabled == NULL ||
-        ops->set_regulator_enabled == NULL || ops->set_vout == NULL ||
-        ops->validate_power == NULL || ops->delay_ms == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
+    return ops != NULL && ops->set_5v_enabled != NULL &&
+           ops->set_regulator_enabled != NULL && ops->set_vout != NULL &&
+           ops->validate_power != NULL && ops->delay_ms != NULL;
+}
+
+esp_err_t bzm_power_set_rail_enabled(const bzm_power_ops_t *ops,
+                                     void *context, bool enabled)
+{
+    if (!valid_ops(ops)) return ESP_ERR_INVALID_ARG;
     if (!enabled) return power_down(ops, context);
 
     esp_err_t err = ops->set_5v_enabled(context, false);
@@ -87,11 +99,21 @@ esp_err_t bzm_power_set_enabled(const bzm_power_ops_t *ops, void *context,
         ops->delay_ms(context, 100);
         err = ops->validate_power(context);
     }
-    if (err == ESP_OK) {
-        err = ops->set_5v_enabled(context, true);
-    }
     if (err != ESP_OK) {
         power_down(ops, context);
     }
+    return err;
+}
+
+esp_err_t bzm_power_set_enabled(const bzm_power_ops_t *ops, void *context,
+                                bool enabled)
+{
+    if (!valid_ops(ops)) return ESP_ERR_INVALID_ARG;
+    if (!enabled) return bzm_power_set_rail_enabled(ops, context, false);
+
+    esp_err_t err = bzm_power_set_rail_enabled(ops, context, true);
+    if (err != ESP_OK) return err; /* rail helper already rolled back */
+    err = ops->set_5v_enabled(context, true);
+    if (err != ESP_OK) power_down(ops, context);
     return err;
 }

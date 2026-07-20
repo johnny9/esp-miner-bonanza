@@ -1,40 +1,42 @@
 #include <stdlib.h>
 
+#include "cJSON.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_psram.h"
-#include "esp_heap_caps.h"
-#include "cJSON.h"
 
-#include "asic_result_task.h"
-#include "create_jobs_task.h"
-#include "hashrate_monitor_task.h"
-#include "fan_controller_task.h"
-#include "statistics_task.h"
-#include "system.h"
-#include "http_server.h"
-#include "serial.h"
-#include "protocol_coordinator.h"
-#include "i2c_bitaxe.h"
 #include "adc.h"
-#include "nvs_config.h"
-#include "self_test.h"
 #include "asic.h"
-#include "bap/bap.h"
-#include "device_config.h"
-#include "connect.h"
-#include "asic_reset.h"
 #include "asic_init.h"
-#include "task_monitor.h"
+#include "asic_reset.h"
+#include "asic_result_task.h"
+#include "bap/bap.h"
+#include "bzm_validation_console.h"
+#include "bzm_validation_runtime.h"
+#include "connect.h"
+#include "create_jobs_task.h"
+#include "device_config.h"
+#include "fan_controller_task.h"
 #include "filesystem.h"
+#include "hashrate_monitor_task.h"
+#include "http_server.h"
+#include "i2c_bitaxe.h"
 #include "input.h"
 #include "log_buffer.h"
+#include "nvs_config.h"
+#include "protocol_coordinator.h"
+#include "self_test.h"
+#include "serial.h"
+#include "statistics_task.h"
+#include "system.h"
+#include "task_monitor.h"
 
 static GlobalState GLOBAL_STATE;
 
 static const char * TAG = "bitaxe";
 
-static void heap_alloc_failed_hook(size_t requested_size, uint32_t caps, const char *function_name)
+static void heap_alloc_failed_hook(size_t requested_size, uint32_t caps, const char * function_name)
 {
     if (caps & MALLOC_CAP_SPIRAM) {
         ESP_EARLY_LOGE(TAG, "%s failed to allocate %zu bytes from PSRAM", function_name, requested_size);
@@ -42,7 +44,7 @@ static void heap_alloc_failed_hook(size_t requested_size, uint32_t caps, const c
     }
 }
 
-static void *cjson_malloc_psram(size_t size)
+static void * cjson_malloc_psram(size_t size)
 {
     if (esp_psram_is_initialized()) {
         return heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
@@ -50,7 +52,7 @@ static void *cjson_malloc_psram(size_t size)
     return malloc(size);
 }
 
-static void cjson_free_psram(void *ptr)
+static void cjson_free_psram(void * ptr)
 {
     free(ptr);
 }
@@ -59,10 +61,7 @@ void app_main(void)
 {
     ESP_ERROR_CHECK(heap_caps_register_failed_alloc_callback(heap_alloc_failed_hook));
 
-    cJSON_Hooks hooks = {
-        .malloc_fn = cjson_malloc_psram,
-        .free_fn = cjson_free_psram
-    };
+    cJSON_Hooks hooks = {.malloc_fn = cjson_malloc_psram, .free_fn = cjson_free_psram};
     cJSON_InitHooks(&hooks);
     if (esp_psram_is_initialized()) {
         GLOBAL_STATE.psram_is_available = true;
@@ -73,7 +72,7 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Welcome to the bitaxe - FOSS || GTFO!");
 
-    if (xTaskCreateWithCaps(cpu_monitor_task, "cpu_monitor", 4096, (void *)&GLOBAL_STATE, 1, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
+    if (xTaskCreateWithCaps(cpu_monitor_task, "cpu_monitor", 4096, (void *) &GLOBAL_STATE, 1, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "Error creating cpu monitor task");
     }
 #ifdef CONFIG_ENABLE_TASK_MONITOR
@@ -81,7 +80,7 @@ void app_main(void)
         ESP_LOGE(TAG, "Error creating task monitor task");
     }
 #endif
-  
+
     // Init I2C
     ESP_ERROR_CHECK(i2c_bitaxe_init());
     ESP_LOGI(TAG, "I2C initialized successfully");
@@ -134,20 +133,42 @@ void app_main(void)
     }
 
     esp_err_t system_init_ret = SYSTEM_init_peripherals(&GLOBAL_STATE);
-    
+
     if (system_init_ret == ESP_OK) {
-        if (xTaskCreate(POWER_MANAGEMENT_task, "power management", 8192, (void *) &GLOBAL_STATE, 10, NULL) != pdPASS) {
-            ESP_LOGE(TAG, "Error creating power management task");
-        }
-        if (!GLOBAL_STATE.SELF_TEST_MODULE.is_active) {
-            if (xTaskCreate(FAN_CONTROLLER_task, "fan_controller", 8192, (void *) &GLOBAL_STATE, 5, NULL) != pdPASS) {
-                ESP_LOGE(TAG, "Error creating fan controller task");
+        if (GLOBAL_STATE.DEVICE_CONFIG.bonanza_bridge) {
+            /*
+             * Board 1002 never enters the legacy automatic voltage/mining
+             * path. The staged runtime first proves OFF_SAFE and is the only
+             * owner allowed to energize or dispatch work.
+             */
+            esp_err_t runtime_err = bzm_validation_runtime_init(&GLOBAL_STATE);
+            if (runtime_err != ESP_OK) {
+                ESP_LOGE(TAG, "Bonanza safe-off runtime initialization failed: %s", esp_err_to_name(runtime_err));
+                system_init_ret = runtime_err;
+            }
+#ifdef CONFIG_BZM_1002_USB_SERIAL_ARM
+            if (runtime_err == ESP_OK) {
+                esp_err_t console_err = bzm_validation_console_init();
+                if (console_err != ESP_OK) {
+                    ESP_LOGE(TAG, "Bonanza USB arm console failed closed: %s", esp_err_to_name(console_err));
+                }
+            }
+#endif
+        } else {
+            if (xTaskCreate(POWER_MANAGEMENT_task, "power management", 8192, (void *) &GLOBAL_STATE, 10, NULL) != pdPASS) {
+                ESP_LOGE(TAG, "Error creating power management task");
+            }
+            if (!GLOBAL_STATE.SELF_TEST_MODULE.is_active) {
+                if (xTaskCreate(FAN_CONTROLLER_task, "fan_controller", 8192, (void *) &GLOBAL_STATE, 5, NULL) != pdPASS) {
+                    ESP_LOGE(TAG, "Error creating fan controller task");
+                }
             }
         }
     } else {
-        ESP_LOGE(TAG, "Critical peripheral initialization failure (%s). Entering degraded mode.", esp_err_to_name(GLOBAL_STATE.SELF_TEST_MODULE.system_init_ret));
+        ESP_LOGE(TAG, "Critical peripheral initialization failure (%s). Entering degraded mode.",
+                 esp_err_to_name(GLOBAL_STATE.SELF_TEST_MODULE.system_init_ret));
     }
-    
+
     if (!GLOBAL_STATE.SELF_TEST_MODULE.is_active) {
         // start the API for AxeOS
         start_rest_server((void *) &GLOBAL_STATE);
@@ -174,6 +195,13 @@ void app_main(void)
 
     queue_init(&GLOBAL_STATE.stratum_queue);
 
+    if (GLOBAL_STATE.DEVICE_CONFIG.bonanza_bridge) {
+        bzm_validation_runtime_mining_stack_ready();
+        ESP_LOGI(TAG, "Bonanza boot remains staged; use the validation API to "
+                      "advance from OFF_SAFE");
+        return;
+    }
+
     if (system_init_ret == ESP_OK) {
         if (asic_initialize(&GLOBAL_STATE, ASIC_INIT_COLD_BOOT, 0) == 0) {
             if (!GLOBAL_STATE.SELF_TEST_MODULE.is_active) {
@@ -190,17 +218,20 @@ void app_main(void)
                 ESP_LOGE(TAG, "Error creating asic result task");
             }
 
-            if (xTaskCreateWithCaps(hashrate_monitor_task, "hashrate monitor", 8192, (void *) &GLOBAL_STATE, 5, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
+            if (xTaskCreateWithCaps(hashrate_monitor_task, "hashrate monitor", 8192, (void *) &GLOBAL_STATE, 5, NULL,
+                                    MALLOC_CAP_SPIRAM) != pdPASS) {
                 ESP_LOGE(TAG, "Error creating hashrate monitor task");
             }
-            if (xTaskCreateWithCaps(statistics_task, "statistics", 8192, (void *) &GLOBAL_STATE, 3, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
+            if (xTaskCreateWithCaps(statistics_task, "statistics", 8192, (void *) &GLOBAL_STATE, 3, NULL, MALLOC_CAP_SPIRAM) !=
+                pdPASS) {
                 ESP_LOGE(TAG, "Error creating statistics task");
             }
         }
     }
 
     protocol_coordinator_init(&GLOBAL_STATE);
-    if (xTaskCreateWithCaps(protocol_coordinator_task, "protocol coord", 3072, (void *) &GLOBAL_STATE, 5, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
+    if (xTaskCreateWithCaps(protocol_coordinator_task, "protocol coord", 3072, (void *) &GLOBAL_STATE, 5, NULL,
+                            MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "Error creating protocol coordinator task");
     }
 

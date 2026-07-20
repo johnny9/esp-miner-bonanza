@@ -58,6 +58,13 @@ bool ASIC_send_work(GlobalState *state, const mining_template_t *template)
     return driver->ops.send_work(state, template);
 }
 
+bool ASIC_clear_work(GlobalState *state)
+{
+    const asic_driver_t *driver = active_driver(state);
+    if (driver == NULL) return false;
+    return driver->ops.clear_work == NULL || driver->ops.clear_work(state);
+}
+
 void ASIC_set_version_mask(GlobalState *state, uint32_t mask)
 {
     const asic_driver_t *driver = active_driver(state);

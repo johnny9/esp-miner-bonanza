@@ -1,5 +1,375 @@
 menu "Bitaxe Configuration"
 
+    menu "Bitaxe 1002 Bonanza staged validation"
+
+        config BZM_1002_MAX_STAGE
+            int "Maximum compiled Bonanza validation stage"
+            range 0 7
+            default 0
+            help
+                Absolute ceiling for the ephemeral Bitaxe 1002 validation
+                target. Stage 0 only proves the rail-off safe state. A request
+                above this value is rejected; stages are never silently
+                skipped or clamped.
+
+        config BZM_1002_POWERED_VALIDATION
+            bool "Compile powered Bonanza validation stages"
+            default n
+            help
+                Permit stages that energize the ASIC rail. Runtime stage
+                selection and a fresh local arm are still required. Leave
+                disabled in ordinary images and until either the independent
+                or explicit board-managed production safety contract and the
+                electrical limits have been qualified.
+
+        config BZM_1002_LAB_VALIDATION
+            bool "Build an attended-lab Bonanza validation image"
+            default n
+            help
+                Marks the image as an attended engineering build. Production
+                policy is used when this option is disabled.
+
+        config BZM_1002_ALLOW_ESP_ONLY_KILL_IN_LAB
+            bool "Allow ESP-only TPS shutdown in attended lab builds"
+            depends on BZM_1002_LAB_VALIDATION
+            default n
+            help
+                Temporary engineering escape hatch for current-limited,
+                attended testing when the independent hardware TPS kill path
+                is not yet present. Production policy always rejects it.
+
+        config BZM_1002_BOARD_MANAGED_SAFETY
+            bool "Accept board-managed fixed-voltage safety"
+            depends on BZM_1002_POWERED_VALIDATION
+            default n
+            help
+                Explicitly accept the existing ESP, RP2040 bridge, and TPS546
+                controls as the production safety authority without requiring
+                a separate independent core-power kill. Powered operation still
+                requires the fixed 2.800 V command and complete TPS profile,
+                continuous VOUT_COMMAND/readback/PGOOD/status monitoring, bridge
+                lease and output readback, fan tach, ASIC telemetry, and verified
+                safe-off. Leave disabled unless this board safety contract has
+                been deliberately accepted.
+
+        config BZM_1002_USB_SERIAL_ARM
+            bool "Use a one-shot USB serial arm instead of the BOOT button"
+            depends on BZM_1002_POWERED_VALIDATION && ESP_CONSOLE_USB_SERIAL_JTAG
+            default n
+            help
+                Adds the `bzm-arm ENERGIZE_BZM_1002` command to the local ESP
+                USB Serial/JTAG console. A correct command creates one
+                short-lived RAM-only token that the next otherwise-valid
+                powered validation request consumes. This avoids BOOT-button
+                AP-mode side effects and is valid for both attended-lab and
+                production policy. Leave disabled when no trusted local debug
+                console is available.
+
+        config BZM_1002_USB_SERIAL_ARM_WINDOW_SECONDS
+            int "USB serial arm validity window (seconds)"
+            depends on BZM_1002_USB_SERIAL_ARM
+            range 1 60
+            default 30
+            help
+                Maximum time between the local console arm command and the
+                single powered validation request that consumes it.
+
+        config BZM_1002_STAGE6_BALANCED_RAMP
+            bool "Enable Stage-6 balanced engine ramp"
+            depends on BZM_1002_POWERED_VALIDATION && BZM_1002_MAX_STAGE >= 6
+            default n
+            help
+                Enable deterministic sentinel work on all 236 usable engines
+                per ASIC. Bottom/top engines are activated sequentially using
+                the BIRDS higher-voltage-stack-first rule, with status/config
+                readback and fresh telemetry after every four-ASIC pair batch.
+                Ordinary mining dispatch remains closed. Leave disabled until
+                stages 0 through 5 have passed on the target hardware.
+
+        config BZM_1002_STAGE7_MINING
+            bool "Enable Stage-7 leased mining validation"
+            depends on BZM_1002_POWERED_VALIDATION && BZM_1002_MAX_STAGE >= 7 && BZM_1002_STAGE6_BALANCED_RAMP
+            default n
+            help
+                Permit real pool work only after stages 0 through 6 pass.
+                Stage 7 then requires a complete symmetric four-ASIC dispatch
+                and locally verifies returned work before its bounded proof
+                timeout. Leave disabled until Stage 6 is validated.
+
+        config BZM_1002_STAGE7_PROOF_TIMEOUT_SECONDS
+            int "Stage-7 mining proof timeout (seconds)"
+            range 1 300
+            default 15
+            help
+                Maximum RUNNING time allowed to prove one complete four-ASIC
+                work dispatch and the configured number of locally valid ASIC
+                results. After proof, the same bound applies independently to
+                each new recoverable result-corruption episode. Initial proof
+                or recovery expiry is BAD and forces safe-off.
+
+        config BZM_1002_STAGE7_MIN_VALID_RESULTS
+            int "Minimum locally valid Stage-7 results"
+            range 1 100
+            default 1
+            help
+                Number of current-work ASIC results that must map to the
+                active generation and pass local nonce/work validation.
+
+        config BZM_1002_STAGE7_MAX_LOCAL_REJECTIONS
+            int "Maximum consecutive locally rejected Stage-7 results"
+            range 0 100
+            default 1
+            help
+                Maximum consecutive current-work ASIC results that may fail
+                local nonce/work validation. A later locally valid nonce
+                resets the streak and proves recovery; the lifetime total
+                remains visible. Exceeding this streak is BAD and forces
+                safe-off. Non-nonce status frames are not results.
+
+        config BZM_1002_STAGE7_ALLOW_MAPPING_RECOVERY
+            bool "Allow bounded Stage-7 result-attribution recovery"
+            depends on BZM_1002_STAGE7_MINING
+            default n
+            help
+                Permit a bounded number of unchecksummed nonce-like frames
+                whose ASIC, engine, or sequence fields cannot be attributed
+                to current work. A complete dispatch plus a locally verified
+                nonce establishes initial Stage-7 completion even when a
+                bounded recovery is pending at that sampling instant. That
+                episode, and each later independent episode, receives a fresh
+                recovery timeout. Leave disabled until qualified on the target
+                hardware.
+
+        config BZM_1002_STAGE7_MAX_MAPPING_REJECTIONS
+            int "Maximum consecutive Stage-7 result-attribution rejections"
+            range 1 100
+            default 2
+            help
+                Maximum consecutive unattributable nonce-like frames when
+                mapping recovery is enabled. A later locally valid nonce
+                resets the streak while the lifetime total remains visible.
+                Exceeding this streak, or failing to recover before the proof
+                timeout, is BAD and forces safe-off.
+
+        config BZM_1002_STAGE7_MIN_NONCE_DIFFICULTY
+            int "Minimum local Stage-7 nonce difficulty"
+            range 1 1024
+            default 1
+            help
+                Minimum locally calculated difficulty for each result counted
+                as Stage-7 evidence. A mapped result below this floor is a
+                local validation rejection, because the ASIC result filter is
+                configured to suppress it before transmission.
+
+        config BZM_1002_STAGE7_LEAD_ZEROS
+            int "Stage-7 ASIC result-filter leading-zero bits"
+            range 32 64
+            default 36
+            help
+                Program every Bonanza engine to report only hashes with at
+                least this many leading zero bits. The 36-bit default reduces
+                result UART traffic by four times relative to the historical
+                34-bit setting while retaining an expected proof difficulty
+                near 16. Raising this value reduces traffic and proof rate;
+                lowering it increases both. Parser loss remains BAD.
+
+        config BZM_1002_STAGE7_DISPATCH_GAP_US
+            int "Stage-7 inter-engine bridge drain gap (microseconds)"
+            depends on BZM_1002_STAGE7_MINING
+            range 0 2000
+            default 250
+            help
+                After each logical engine has been programmed on all four
+                ASICs, wait for ESP UART TX completion, leave this bounded
+                idle interval on the 5 Mbaud link, and drain received TDM
+                traffic. Zero disables the idle interval but retains the TX
+                completion and RX-drain checkpoint. Any checkpoint failure or
+                parser corruption outside the separately configured bounded
+                realignment policy remains BAD and forces safe-off.
+
+        config BZM_1002_STAGE7_ALLOW_PARSER_REALIGN
+            bool "Allow bounded Stage-7 parser realignment"
+            depends on BZM_1002_STAGE7_MINING
+            default n
+            help
+                Match the BIRDS parser's byte-at-a-time resynchronization
+                policy during RUNNING. A discard burst is accepted only when
+                a valid frame is emitted after the last discarded byte and
+                the parser then remains clean for the configured windows.
+                Other parser errors remain immediately BAD. Leave disabled
+                until qualified on the target hardware.
+
+        config BZM_1002_STAGE7_PARSER_REALIGN_MAX_DISCARDS
+            int "Maximum discarded bytes per Stage-7 realignment"
+            range 1 256
+            default 32
+            help
+                Maximum discarded bytes in one recoverable RUNNING burst.
+                Exceeding this bound is continuous corruption and is BAD.
+
+        config BZM_1002_STAGE7_PARSER_REALIGN_CLEAN_WINDOWS
+            int "Clean health windows required after Stage-7 realignment"
+            range 1 10
+            default 2
+            help
+                Consecutive 500 ms runtime-health windows with no new discard
+                and no partial buffered frame after a valid post-discard frame
+                before recovery is accepted. Complete results already waiting
+                in the consumer queue do not prevent parser realignment.
+
+        config BZM_1002_STAGE7_PARSER_REALIGN_MAX_WINDOWS
+            int "Maximum Stage-7 parser realignment windows"
+            range 2 20
+            default 6
+            help
+                Maximum 500 ms runtime-health observations allowed for one
+                realignment. Failure to settle by then is BAD.
+
+        config BZM_1002_STAGE7_PARSER_REALIGN_MAX_EVENTS
+            int "Maximum discard bursts per Stage-7 realignment"
+            range 1 20
+            default 2
+            help
+                Maximum observations with new discarded bytes during one
+                unresolved realignment episode. A successfully realigned
+                parser resets this count; exceeding it before recovery is
+                continuous corruption and is BAD.
+
+        config BZM_1002_FAN_MIN_RPM
+            int "Provisional minimum fan RPM"
+            range 1 30000
+            default 1000
+            help
+                Minimum fresh fan tach reading for the CONTROLS stage. This is
+                provisional until the production fan is characterized.
+
+        config BZM_1002_MAX_LEASE_SECONDS
+            int "Maximum powered validation lease (seconds)"
+            range 1 300
+            default 30
+            help
+                Absolute upper bound for a powered validation or RUNNING
+                lease. The runtime target is never persisted, and expiry
+                forces reset, 5 V and the TPS rail off.
+
+        config BZM_1002_SAFE_OFF_VCORE_MV
+            int "Safe-off VCORE discharge threshold (mV)"
+            range 0 1000
+            default 250
+            help
+                Maximum fresh TPS READ_VOUT that may be reported as a GOOD
+                OFF_SAFE result. This threshold must be qualified against
+                the production board discharge network before enabling
+                powered stages.
+
+        config BZM_1002_TELEMETRY_MAX_AGE_MS
+            int "Maximum Bonanza ASIC telemetry age (milliseconds)"
+            range 100 5000
+            default 1000
+            help
+                Sensor, clock and runtime checks reject older samples. Every
+                stage requires evidence captured after that stage's writes.
+
+        config BZM_1002_SENSOR_TDM_GAP_COUNT
+            int "Thermal/voltage TDM reporting interval gap"
+            range 0 63
+            default 0
+            help
+                Programs Bonanza local register 0x2d. Zero is the BIRDS
+                maximum-rate reference; larger values skip reporting
+                intervals and reduce shared TDM traffic. At the reference
+                5 Mbaud, 100-slot, 127-bit schedule, 63 is approximately
+                6.2 reports per second per ASIC and remains inside the
+                default one-second telemetry freshness requirement.
+
+        config BZM_1002_TEMP_MIN_C
+            int "Provisional minimum ASIC temperature (C)"
+            range -100 100
+            default -20
+
+        config BZM_1002_TEMP_MAX_C
+            int "Provisional maximum ASIC temperature (C)"
+            range 1 150
+            default 105
+            help
+                Fresh on-die telemetry at or above this engineering ceiling
+                is BAD. Qualify this value on production hardware.
+
+        config BZM_1002_STACK_MV_MIN
+            int "Provisional minimum internal stack voltage (mV)"
+            range 0 2000
+            default 300
+
+        config BZM_1002_STACK_MV_MAX
+            int "Provisional maximum internal stack voltage (mV)"
+            range 1 2000
+            default 800
+            help
+                Applied independently to CH0 (bottom stack) and CH1 (top
+                stack). The conversion and limits must be calibrated from
+                device captures before production enablement.
+
+        config BZM_1002_INTERSTACK_DIFF_ABS_MAX_MV
+            int "Maximum absolute CH2 inter-stack differential (mV)"
+            range 1 200
+            default 50
+            help
+                CH2 measures the differential between top-stack VSS and
+                bottom-stack VDD; it is not a third stack voltage. Validation
+                requires its absolute value to remain at or below this
+                provisional engineering limit.
+
+        config BZM_1002_CH2_CONFIRM_SAMPLES
+            int "Consecutive CH2 excursions required for shutdown"
+            range 1 10
+            default 3
+            help
+                Number of consecutive fresh per-ASIC telemetry frames that
+                must exceed the CH2 absolute differential limit before the
+                excursion is treated as continuous. A recovered frame resets
+                that ASIC's count. Set to 1 for immediate shutdown. This
+                confirmation applies only to finite CH2 excursions; trips,
+                sensor faults, invalid/stale/missing telemetry, CH0/CH1 or
+                temperature violations and stack imbalance remain immediate
+                failures. Live combined PLL lock telemetry is handled by its
+                separate confirmation setting.
+
+        config BZM_1002_PLL_LOCK_CONFIRM_SAMPLES
+            int "Consecutive combined PLL-lock clears required for shutdown"
+            range 1 10
+            default 1
+            help
+                Number of consecutive fresh per-ASIC telemetry frames whose
+                unchecksummed combined PLL0/PLL1 lock bit must be clear before
+                runtime shutdown. A fresh locked frame resets that ASIC's
+                count. Set to 1 for immediate shutdown. This does not weaken
+                the initial Stage-5 PLL register readback and direct lock
+                validation. Trips, voltage-command changes, and all unrelated
+                safety faults remain immediate failures.
+
+        config BZM_1002_STACK_MAX_SPREAD_MV
+            int "Provisional maximum CH0/CH1 stack spread (mV)"
+            range 1 1000
+            default 100
+            help
+                Maximum absolute difference between CH0 (bottom stack) and
+                CH1 (top stack) on one ASIC. CH2 has its own inter-stack
+                differential limit and is not included in this spread. A
+                larger CH0/CH1 spread is treated as a stack-imbalance fault.
+                This provisional threshold must be calibrated from production
+                device captures.
+
+        config BZM_BRIDGE_UPDATE_EXPERIMENTAL
+            bool "Enable the experimental Bonanza bridge updater"
+            default n
+            help
+                Its API and production task are disabled unless selected. The
+                updater is maintenance-only and must remain off in
+                production until signed persistent A/B staging and automatic
+                last-known-good recovery are implemented and qualified.
+
+    endmenu
+
     menu "GPIO Pin Configuration"
 
         config GPIO_BUTTON_BOOT

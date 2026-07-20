@@ -6,6 +6,15 @@
 
 #include "esp_err.h"
 
+#define BZM_TPS546_FIXED_VOUT_V 2.8f
+#define BZM_TPS546_MAX_VOUT_V 2.95f
+#define BZM_TPS546_VOUT_TOLERANCE_V 0.001f
+/* Extended VOUT_MODE uses a 1.953125 mV ULINEAR16 LSB and the TPS helper
+ * truncates when encoding 2.800 V, yielding a decoded 2.798828 V. Exact raw
+ * word equality is enforced separately; this bound covers representation
+ * error only. */
+#define BZM_TPS546_VOUT_READBACK_TOLERANCE_V 0.002f
+
 typedef struct {
     uint8_t phase;
     uint16_t smbalert_mask[7];
@@ -55,6 +64,8 @@ typedef struct {
 
 extern const bzm_tps546_profile_t BZM_TPS546_BIRDS_PROFILE;
 
+bool bzm_power_voltage_is_allowed(float volts);
+
 typedef struct {
     esp_err_t (*set_5v_enabled)(void *context, bool enabled);
     esp_err_t (*set_regulator_enabled)(void *context, bool enabled);
@@ -65,5 +76,7 @@ typedef struct {
 
 esp_err_t bzm_power_set_enabled(const bzm_power_ops_t *ops, void *context,
                                 bool enabled);
+esp_err_t bzm_power_set_rail_enabled(const bzm_power_ops_t *ops,
+                                     void *context, bool enabled);
 
 #endif // BZM_POWER_H

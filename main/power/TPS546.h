@@ -1,6 +1,7 @@
 #ifndef TPS546_H_
 #define TPS546_H_
 
+#include <stddef.h>
 #include <stdint.h>
 #include <esp_err.h>
 #include <stdbool.h>
@@ -31,6 +32,8 @@ typedef struct {
   float    read_vout, read_vin, read_iout;
   int      read_temp1;
   float    vout_command;
+  uint16_t vout_command_raw;
+  bool     vout_command_matches_active_config;
 } TPS546_StatusSnapshot;
 
 typedef struct
@@ -235,5 +238,12 @@ esp_err_t TPS546_clear_faults(void);
 const char* TPS546_get_error_message(void); //Get the current TPS error message
 void TPS546_log_snapshot(const TPS546_StatusSnapshot *s);
 esp_err_t TPS546_snapshot_status(TPS546_StatusSnapshot *s);
+
+/**
+ * Verify the active Bonanza/extended profile against exact PMBus readback.
+ * On failure, detail identifies the first register that could not be read or
+ * whose encoded value did not match. A successful verification writes GOOD.
+ */
+esp_err_t TPS546_verify_active_config(char *detail, size_t detail_len);
 
 #endif /* TPS546_H_ */

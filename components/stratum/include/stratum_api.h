@@ -78,9 +78,15 @@ typedef struct {
     bool tracking;
 } RequestTiming;
 
+typedef bool (*stratum_restart_guard_fn)(void *context);
+
 esp_transport_handle_t STRATUM_V1_transport_init(tls_mode tls, char * cert);
 
-void STRATUM_V1_initialize_buffer();
+bool STRATUM_V1_initialize_buffer(void);
+
+void STRATUM_V1_set_restart_guard(stratum_restart_guard_fn guard,
+                                  void *context);
+bool STRATUM_V1_prepare_restart(void);
 
 char *STRATUM_V1_receive_jsonrpc_line(esp_transport_handle_t transport);
 

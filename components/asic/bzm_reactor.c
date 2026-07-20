@@ -2,32 +2,56 @@
 
 #include <string.h>
 
+#include "bzm_topology.h"
+
 static uint16_t sequence_space(const bzm_reactor_t *reactor)
 {
     return reactor->config.enhanced_mode ? 2 : 256;
 }
 
 static void partition_nonce_space(const bzm_reactor_t *reactor,
-                                  uint16_t logical_engine_id,
+                                  uint16_t schedule_index,
                                   bzm_work_t *work)
 {
     uint64_t total = (uint64_t)UINT32_MAX + 1;
     uint64_t step = total / reactor->config.engine_count;
-    uint64_t start = step * logical_engine_id;
-    uint64_t end = logical_engine_id + 1 == reactor->config.engine_count
-        ? UINT32_MAX : (step * (logical_engine_id + 1)) - 1;
+    uint64_t start = step * schedule_index;
+    uint64_t end = schedule_index + 1 == reactor->config.engine_count
+        ? UINT32_MAX : (step * (schedule_index + 1)) - 1;
     work->starting_nonce = (uint32_t)start;
     work->end_nonce = (uint32_t)end;
 }
 
+static bool scheduled_engine_at(uint16_t schedule_index,
+                                bzm_engine_location_t *engine)
+{
+    // This bounds stack skew in write order. It is not the final atomic
+    // pairwise commit barrier; partial dispatch still fails and flushes.
+    return bzm_topology_activation_at(schedule_index,
+                                      BZM_ENGINE_STACK_BOTTOM, engine);
+}
+
 static bzm_assignment_t *find_assignment(bzm_reactor_t *reactor,
-                                         uint16_t engine_id)
+                                         uint16_t engine_id,
+                                         uint8_t logical_sequence)
 {
     for (size_t i = 0; i < BZM_MAX_ACTIVE_WORK; ++i) {
         bzm_assignment_t *assignment = &reactor->assignments[i];
-        if (assignment->active && assignment->engine_id == engine_id) {
+        if (assignment->active && assignment->engine_id == engine_id &&
+            assignment->logical_sequence == logical_sequence) {
             return assignment;
         }
+    }
+    return NULL;
+}
+
+static bzm_assignment_t *find_engine_assignment(bzm_reactor_t *reactor,
+                                                uint16_t engine_id)
+{
+    for (size_t i = 0; i < BZM_MAX_ACTIVE_WORK; ++i) {
+        bzm_assignment_t *assignment = &reactor->assignments[i];
+        if (assignment->active && assignment->engine_id == engine_id)
+            return assignment;
     }
     return NULL;
 }
@@ -41,6 +65,31 @@ static bzm_assignment_t *free_assignment(bzm_reactor_t *reactor)
         }
     }
     return NULL;
+}
+
+static bool has_active_assignment(const bzm_reactor_t *reactor)
+{
+    for (size_t i = 0; i < BZM_MAX_ACTIVE_WORK; ++i) {
+        if (reactor->assignments[i].active)
+            return true;
+    }
+    return reactor->previous_batch_complete;
+}
+
+static void retain_current_batch(bzm_reactor_t *reactor)
+{
+    reactor->previous_batch = (bzm_assignment_t){0};
+    reactor->previous_batch_complete = false;
+    if (!reactor->current_batch_complete)
+        return;
+    for (size_t i = 0; i < BZM_MAX_ACTIVE_WORK; ++i) {
+        const bzm_assignment_t *assignment = &reactor->assignments[i];
+        if (assignment->active && assignment->state == BZM_ENGINE_ASSIGNED) {
+            reactor->previous_batch = *assignment;
+            reactor->previous_batch_complete = true;
+            return;
+        }
+    }
 }
 
 bool bzm_reactor_init(bzm_reactor_t *reactor, asic_job_store_t *job_store,
@@ -84,6 +133,8 @@ bool bzm_reactor_begin_flush(bzm_reactor_t *reactor)
             reactor->assignments[i].state = BZM_ENGINE_FLUSHING;
         }
     }
+    if (reactor->previous_batch_complete)
+        reactor->previous_batch.state = BZM_ENGINE_FLUSHING;
 
     reactor->flush_complete = reactor->transport.flush == NULL ||
         reactor->transport.flush(reactor->transport_context);
@@ -97,6 +148,9 @@ void bzm_reactor_finish_flush(bzm_reactor_t *reactor)
         return;
     }
     memset(reactor->assignments, 0, sizeof(reactor->assignments));
+    reactor->previous_batch = (bzm_assignment_t){0};
+    reactor->previous_batch_complete = false;
+    reactor->current_batch_complete = false;
     reactor->next_engine = 0;
     reactor->next_sequence = 0;
     reactor->flush_pending = false;
@@ -106,6 +160,27 @@ void bzm_reactor_finish_flush(bzm_reactor_t *reactor)
 bool bzm_reactor_is_flush_pending(const bzm_reactor_t *reactor)
 {
     return reactor != NULL && reactor->flush_pending;
+}
+
+bool bzm_reactor_clear_work(bzm_reactor_t *reactor)
+{
+    if (reactor == NULL || reactor->job_store == NULL)
+        return false;
+    /* Stratum sends an initial clean-jobs notification before any BZM work
+     * exists. A 944-engine hardware flush at that point is unnecessary and
+     * creates a result-report/TDM transition after Stage 7's quiet baseline.
+     * Still invalidate any unowned store entries and advance the epoch. */
+    if (!reactor->flush_pending && !has_active_assignment(reactor)) {
+        asic_job_store_invalidate_all(reactor->job_store);
+        if (++reactor->epoch == 0)
+            reactor->epoch = 1;
+        reactor->next_engine = 0;
+        reactor->next_sequence = 0;
+        return true;
+    }
+    if (!bzm_reactor_begin_flush(reactor)) return false;
+    bzm_reactor_finish_flush(reactor);
+    return !bzm_reactor_is_flush_pending(reactor);
 }
 
 bzm_assign_status_t bzm_reactor_assign(bzm_reactor_t *reactor,
@@ -121,12 +196,13 @@ bzm_assign_status_t bzm_reactor_assign(bzm_reactor_t *reactor,
             ? BZM_ASSIGN_FLUSH_REQUIRED : BZM_ASSIGN_TRANSPORT_ERROR;
     }
 
-    uint16_t logical_engine_id = reactor->next_engine;
-    uint16_t engine_id;
-    if (!bzm_engine_physical_id(logical_engine_id, &engine_id)) {
+    uint16_t schedule_index = reactor->next_engine;
+    bzm_engine_location_t engine;
+    if (!scheduled_engine_at(schedule_index, &engine)) {
         return BZM_ASSIGN_INVALID;
     }
-    bzm_assignment_t *existing = find_assignment(reactor, engine_id);
+    bzm_assignment_t *existing = find_engine_assignment(
+        reactor, engine.physical_id);
     if (existing != NULL && existing->state != BZM_ENGINE_IDLE) {
         return BZM_ASSIGN_BUSY;
     }
@@ -144,7 +220,7 @@ bzm_assign_status_t bzm_reactor_assign(bzm_reactor_t *reactor,
         .template = template,
     };
     bzm_work_t work;
-    if (!bzm_work_build(&source, engine_id,
+    if (!bzm_work_build(&source, engine.physical_id,
                         (uint8_t)reactor->next_sequence,
                         reactor->config.timestamp_count,
                         reactor->config.lead_zeros,
@@ -152,7 +228,7 @@ bzm_assign_status_t bzm_reactor_assign(bzm_reactor_t *reactor,
         asic_job_store_release(reactor->job_store, handle);
         return BZM_ASSIGN_INVALID;
     }
-    partition_nonce_space(reactor, logical_engine_id, &work);
+    partition_nonce_space(reactor, schedule_index, &work);
     if (!reactor->transport.write_work(reactor->transport_context, &work)) {
         asic_job_store_release(reactor->job_store, handle);
         return BZM_ASSIGN_TRANSPORT_ERROR;
@@ -160,8 +236,8 @@ bzm_assign_status_t bzm_reactor_assign(bzm_reactor_t *reactor,
 
     *assignment = (bzm_assignment_t) {
         .active = true,
-        .logical_engine_id = logical_engine_id,
-        .engine_id = engine_id,
+        .logical_engine_id = engine.topology_index,
+        .engine_id = engine.physical_id,
         .state = BZM_ENGINE_ASSIGNED,
         .logical_sequence = (uint8_t)reactor->next_sequence,
         .epoch = reactor->epoch,
@@ -177,7 +253,7 @@ bzm_assign_status_t bzm_reactor_assign(bzm_reactor_t *reactor,
            sizeof(assignment->versions));
 
     reactor->next_engine =
-        (logical_engine_id + 1) % reactor->config.engine_count;
+        (schedule_index + 1) % reactor->config.engine_count;
     reactor->next_sequence++;
     if (assigned_work != NULL) *assigned_work = work;
     return BZM_ASSIGN_OK;
@@ -210,34 +286,44 @@ bzm_assign_status_t bzm_reactor_dispatch(bzm_reactor_t *reactor,
         .template = template,
     };
 
+    retain_current_batch(reactor);
+    reactor->current_batch_complete = false;
+
     size_t completed = 0;
-    for (uint16_t logical_engine_id = 0;
-         logical_engine_id < reactor->config.engine_count;
-         ++logical_engine_id) {
-        uint16_t engine_id;
-        if (!bzm_engine_physical_id(logical_engine_id, &engine_id)) break;
-        bzm_assignment_t *assignment = find_assignment(reactor, engine_id);
-        if (assignment == NULL) assignment = free_assignment(reactor);
+    for (uint16_t schedule_index = 0;
+         schedule_index < reactor->config.engine_count;
+         ++schedule_index) {
+        bzm_engine_location_t engine;
+        if (!scheduled_engine_at(schedule_index, &engine)) break;
+        bzm_assignment_t *assignment = find_engine_assignment(
+            reactor, engine.physical_id);
+        if (assignment == NULL)
+            assignment = free_assignment(reactor);
         if (assignment == NULL) break;
 
         bzm_work_t work;
-        if (!bzm_work_build(&source, engine_id,
+        if (!bzm_work_build(&source, engine.physical_id,
                             (uint8_t)reactor->next_sequence,
                             reactor->config.timestamp_count,
                             reactor->config.lead_zeros,
                             reactor->config.enhanced_mode, &work)) {
             break;
         }
-        partition_nonce_space(reactor, logical_engine_id, &work);
+        partition_nonce_space(reactor, schedule_index, &work);
         if (!reactor->transport.write_work(reactor->transport_context,
                                            &work)) {
+            break;
+        }
+        if (reactor->transport.dispatch_checkpoint != NULL &&
+            !reactor->transport.dispatch_checkpoint(
+                reactor->transport_context)) {
             break;
         }
 
         *assignment = (bzm_assignment_t) {
             .active = true,
-            .logical_engine_id = logical_engine_id,
-            .engine_id = engine_id,
+            .logical_engine_id = engine.topology_index,
+            .engine_id = engine.physical_id,
             .state = BZM_ENGINE_ASSIGNED,
             .logical_sequence = (uint8_t)reactor->next_sequence,
             .epoch = reactor->epoch,
@@ -254,11 +340,10 @@ bzm_assign_status_t bzm_reactor_dispatch(bzm_reactor_t *reactor,
         completed++;
     }
 
-    if (completed == 0) {
-        asic_job_store_release(reactor->job_store, handle);
-        return BZM_ASSIGN_TRANSPORT_ERROR;
-    }
     if (completed != reactor->config.engine_count) {
+        /* A write_work implementation may have reached only a subset of the
+         * physical ASICs before returning false, even when no logical engine
+         * completed. Always issue the symmetric flush barrier. */
         bool flushed = bzm_reactor_begin_flush(reactor);
         if (flushed) bzm_reactor_finish_flush(reactor);
         if (assigned_count != NULL) *assigned_count = 0;
@@ -266,6 +351,7 @@ bzm_assign_status_t bzm_reactor_dispatch(bzm_reactor_t *reactor,
     }
     reactor->next_engine = 0;
     reactor->next_sequence++;
+    reactor->current_batch_complete = true;
     if (assigned_count != NULL) *assigned_count = completed;
     return BZM_ASSIGN_OK;
 }
@@ -278,25 +364,32 @@ bool bzm_reactor_map_result(bzm_reactor_t *reactor,
     if (reactor == NULL || raw == NULL || event == NULL ||
         reactor->flush_pending ||
         !bzm_engine_logical_id(raw->engine_id, &logical_engine_id) ||
-        logical_engine_id >= reactor->config.engine_count ||
-        (raw->status & 0x8) == 0) {
-        return false;
-    }
-
-    bzm_assignment_t *assignment = find_assignment(reactor, raw->engine_id);
-    if (assignment == NULL ||
-        assignment->logical_engine_id != logical_engine_id ||
-        assignment->state != BZM_ENGINE_ASSIGNED ||
-        assignment->epoch != reactor->epoch) {
+        !bzm_raw_result_has_valid_nonce(raw)) {
         return false;
     }
 
     uint8_t logical_sequence = raw->sequence_id;
     uint8_t micro_job = 0;
-    if (assignment->enhanced_mode) {
+    if (reactor->config.enhanced_mode) {
         logical_sequence >>= 2;
         micro_job = raw->sequence_id & 0x03;
     }
+
+    bzm_assignment_t *assignment = find_assignment(
+        reactor, raw->engine_id, logical_sequence);
+    bool previous = false;
+    if (assignment == NULL && reactor->previous_batch_complete &&
+        reactor->previous_batch.logical_sequence == logical_sequence) {
+        assignment = &reactor->previous_batch;
+        previous = true;
+    }
+    if (assignment == NULL ||
+        (!previous && assignment->logical_engine_id != logical_engine_id) ||
+        assignment->state != BZM_ENGINE_ASSIGNED ||
+        assignment->epoch != reactor->epoch) {
+        return false;
+    }
+
     if (logical_sequence != assignment->logical_sequence ||
         micro_job >= assignment->version_count ||
         raw->time > assignment->timestamp_count) {
@@ -305,19 +398,26 @@ bool bzm_reactor_map_result(bzm_reactor_t *reactor,
 
     uint32_t final_version = assignment->versions[micro_job];
     uint32_t ntime_offset = assignment->timestamp_count - raw->time;
+    size_t asic_index = 0;
+    if (!bzm_topology_asic_index(raw->asic_id, &asic_index)) {
+        return false;
+    }
+
     *event = (asic_event_t) {
         .type = ASIC_EVENT_SHARE_RESULT,
         .data.share = {
             .work_handle = assignment->handle,
-            .nonce = raw->nonce - assignment->nonce_offset,
+            /* Bonanza/cgminer represents the nonce in the per-word-swapped
+             * work->data byte order. Convert it to the host-order Bitcoin
+             * nonce expected by the shared validator/submission path after
+             * applying the family-specific pipeline gap. */
+            .nonce = __builtin_bswap32(raw->nonce -
+                                       assignment->nonce_offset),
             .final_ntime = assignment->base_ntime + ntime_offset,
             .final_version = final_version,
             .version_bits = final_version ^ assignment->base_version,
             .timestamp_us = raw->timestamp_us,
-            .asic_index = raw->asic_id >= BZM_FIRST_ASIC_ID &&
-                          raw->asic_id < BZM_FIRST_ASIC_ID +
-                                         BZM_MAX_ASIC_COUNT
-                ? raw->asic_id - BZM_FIRST_ASIC_ID : 0,
+            .asic_index = asic_index,
             .engine_id = assignment->logical_engine_id,
             .sequence_id = assignment->logical_sequence,
             .micro_job_id = micro_job,

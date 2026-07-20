@@ -20,6 +20,9 @@ typedef struct {
     Asic id;
     const char * name;
     uint16_t chip_id;
+    // External input clock. Zero means not separately modelled.
+    uint16_t reference_clock_mhz;
+    // Hash PLL frequency, never the external reference clock.
     uint16_t default_frequency_mhz;
     const uint16_t* frequency_options;
     bool frequency_tunable;
@@ -108,9 +111,8 @@ static const uint16_t BM1366_FREQUENCY_OPTIONS[]   = {400, 425, 450, 475, 485, 5
 static const uint16_t BM1368_FREQUENCY_OPTIONS[]   = {400, 425, 450, 475, 485, 490, 500, 525, 550, 575, 0};
 static const uint16_t BM1370_FREQUENCY_OPTIONS[]   = {400, 490, 525, 550, 600, 625,                     0};
 static const uint16_t BM1370_FRQUENCY_XP_OPTIONS[] = {350, 375, 380, 400, 410,                        0};
-// The 50 MHz ASIC reference clock is the only board-validated clock point.
-// Expose no unvalidated BZM PLL choices until hardware acceptance records one.
-static const uint16_t BZM_FREQUENCY_OPTIONS[]      = {50, 0};
+// Keep the fixed 50 MHz input separate from the conservative hash PLL target.
+static const uint16_t BZM_FREQUENCY_OPTIONS[]      = {800, 0};
 
 static const uint16_t BM1397_VOLTAGE_OPTIONS[] = {1100, 1150, 1200, 1250, 1300, 1350, 1400, 1450, 1500, 0};
 static const uint16_t BM1366_VOLTAGE_OPTIONS[] = {1100, 1150, 1200, 1250, 1300,                         0};
@@ -124,7 +126,7 @@ static const AsicConfig ASIC_BM1366 = { .id = BM1366, .name = "BM1366", .chip_id
 static const AsicConfig ASIC_BM1368 = { .id = BM1368, .name = "BM1368", .chip_id = 1368, .default_frequency_mhz = 490, .frequency_options = BM1368_FREQUENCY_OPTIONS, .frequency_tunable = true, .default_voltage_mv = 1166, .voltage_options = BM1368_VOLTAGE_OPTIONS, .difficulty = 256, .core_count =  80, .small_core_count = 1276, .hash_domains = 4, .hashrate_test_percentage_target = 0.80, .default_asic_timeout = 500};
 static const AsicConfig ASIC_BM1370 = { .id = BM1370, .name = "BM1370", .chip_id = 1370, .default_frequency_mhz = 525, .frequency_options = BM1370_FREQUENCY_OPTIONS, .frequency_tunable = true, .default_voltage_mv = 1150, .voltage_options = BM1370_VOLTAGE_OPTIONS, .difficulty = 256, .core_count = 128, .small_core_count = 2040, .hash_domains = 4, .hashrate_test_percentage_target = 0.85, .default_asic_timeout = 500};
 static const AsicConfig ASIC_BM1370XP = { .id = BM1370, .name = "BM1370", .chip_id = 1370, .default_frequency_mhz = 400, .frequency_options = BM1370_FRQUENCY_XP_OPTIONS, .frequency_tunable = true, .default_voltage_mv = 1150, .voltage_options = BM1370_VOLTAGE_OPTIONS, .difficulty = 256, .core_count = 128, .small_core_count = 2040, .hash_domains = 4, .hashrate_test_percentage_target = 0.85, .default_asic_timeout = 500};
-static const AsicConfig ASIC_BZM = { .id = BZM, .name = "BZM", .chip_id = 0xB0A0, .default_frequency_mhz = 50, .frequency_options = BZM_FREQUENCY_OPTIONS, .frequency_tunable = false, .default_voltage_mv = 2800, .voltage_options = BZM_VOLTAGE_OPTIONS, .difficulty = 256, .core_count = 240, .small_core_count = 240, .hash_domains = 1, .hashrate_test_percentage_target = 0.85, .default_asic_timeout = 1000};
+static const AsicConfig ASIC_BZM = { .id = BZM, .name = "BZM", .chip_id = 0xB0A0, .reference_clock_mhz = 50, .default_frequency_mhz = 800, .frequency_options = BZM_FREQUENCY_OPTIONS, .frequency_tunable = false, .default_voltage_mv = 2800, .voltage_options = BZM_VOLTAGE_OPTIONS, .difficulty = 256, .core_count = 236, .small_core_count = 236, .hash_domains = 1, .hashrate_test_percentage_target = 0.85, .default_asic_timeout = 1000};
 
 static const AsicConfig default_asic_configs[] = {
     ASIC_BM1397,

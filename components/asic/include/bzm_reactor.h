@@ -26,6 +26,11 @@ typedef enum {
 
 typedef struct {
     bool (*write_work)(void *context, const bzm_work_t *work);
+    /* Optional batch-dispatch checkpoint after each complete logical-engine
+     * write. Hardware transports use this to bound an otherwise continuous
+     * command burst and drain full-duplex receive traffic. Returning false
+     * aborts and symmetrically flushes the incomplete generation. */
+    bool (*dispatch_checkpoint)(void *context);
     bool (*flush)(void *context);
 } bzm_transport_ops_t;
 
@@ -60,6 +65,12 @@ typedef struct {
     void *transport_context;
     bzm_reactor_config_t config;
     bzm_assignment_t assignments[BZM_MAX_ACTIVE_WORK];
+    /* A completed full dispatch has common job/version/time metadata across
+     * all engines. Retain that compact descriptor while the next sequence is
+     * programmed so in-flight results from both hardware generations map. */
+    bzm_assignment_t previous_batch;
+    bool previous_batch_complete;
+    bool current_batch_complete;
     uint16_t next_engine;
     uint16_t next_sequence;
     uint32_t epoch;
@@ -85,6 +96,9 @@ bzm_assign_status_t bzm_reactor_dispatch(bzm_reactor_t *reactor,
 bool bzm_reactor_begin_flush(bzm_reactor_t *reactor);
 void bzm_reactor_finish_flush(bzm_reactor_t *reactor);
 bool bzm_reactor_is_flush_pending(const bzm_reactor_t *reactor);
+// Complete one clean-job barrier and retire every prior assignment/handle.
+// An idle reactor invalidates the store without emitting hardware flush work.
+bool bzm_reactor_clear_work(bzm_reactor_t *reactor);
 
 bool bzm_reactor_map_result(bzm_reactor_t *reactor,
                             const bzm_raw_result_t *raw,

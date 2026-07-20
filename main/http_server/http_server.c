@@ -5,6 +5,7 @@
 #include <sys/param.h>
 #include <sys/stat.h>
 #include <esp_heap_caps.h>
+#include <esp_psram.h>
 
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
@@ -44,6 +45,11 @@
 #include "log_buffer.h"
 #include "cjson_utils.h"
 #include "utils.h"
+#include "bzm_bridge.h"
+#include "bzm_bridge_update.h"
+#include "bzm_ota_guard.h"
+#include "bzm_validation_api.h"
+#include "bzm_validation_runtime.h"
 
 static const char * TAG = "http_server";
 static const char * CORS_TAG = "CORS";
@@ -72,6 +78,63 @@ static int system_info_prebuffer_len = 256;
 static int system_statistics_prebuffer_len = 256;
 static int system_wifi_scan_prebuffer_len = 256;
 static int api_common_prebuffer_len = 256;
+static int bridge_api_prebuffer_len = 256;
+static pthread_mutex_t bridge_upload_lock = PTHREAD_MUTEX_INITIALIZER;
+static GlobalState * GLOBAL_STATE;
+
+static bool bzm_ota_maintenance_acquire(void *context)
+{
+    (void)context;
+    if (GLOBAL_STATE == NULL ||
+        !GLOBAL_STATE->DEVICE_CONFIG.bonanza_bridge) {
+        return true;
+    }
+    if (bzm_validation_runtime_acquire_maintenance(
+            BZM_SUPERVISOR_OWNER_ESP_OTA)) {
+        return true;
+    }
+    return false;
+}
+
+static bool bzm_ota_maintenance_release(void *context)
+{
+    (void)context;
+    return GLOBAL_STATE == NULL ||
+           !GLOBAL_STATE->DEVICE_CONFIG.bonanza_bridge ||
+           bzm_validation_runtime_release_maintenance(
+               BZM_SUPERVISOR_OWNER_ESP_OTA);
+}
+
+static bool bzm_ota_begin(httpd_req_t *req, bzm_ota_guard_t *guard)
+{
+    if (bzm_ota_guard_init(
+            guard, bzm_ota_maintenance_acquire,
+            bzm_ota_maintenance_release, NULL) &&
+        bzm_ota_guard_begin(guard)) {
+        return true;
+    }
+    httpd_resp_set_status(req, "409 Conflict");
+    (void)httpd_resp_sendstr(
+        req, "Bonanza OTA requires exclusive verified OFF_SAFE ownership");
+    return false;
+}
+
+static esp_err_t bzm_ota_error_after_release(httpd_req_t *req,
+                                              bzm_ota_guard_t *guard,
+                                              httpd_err_code_t error,
+                                              const char *message)
+{
+    if (!bzm_ota_guard_release(guard)) {
+        if (GLOBAL_STATE != NULL) {
+            snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20,
+                     "Safe-off Error");
+        }
+        return httpd_resp_send_err(
+            req, HTTPD_500_INTERNAL_SERVER_ERROR,
+            "Update failed and Bonanza safe-off release could not be verified");
+    }
+    return httpd_resp_send_err(req, error, message);
+}
 
 typedef enum
 {
@@ -151,7 +214,6 @@ static esp_err_t GET_system_logs(httpd_req_t *req)
     return res;
 }
 
-static GlobalState * GLOBAL_STATE;
 static httpd_handle_t server = NULL;
 
 esp_err_t HTTP_send_json(httpd_req_t * req, const cJSON * item, int * prebuffer_len)
@@ -937,22 +999,19 @@ static esp_err_t POST_restart(httpd_req_t * req)
         return ESP_OK;
     }
 
-    ESP_LOGI(TAG, "Restarting System because of API Request");
-
-    httpd_resp_set_type(req, "application/json");
-
-    cJSON * root = cJSON_CreateObject();
-    if (root == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory allocation failed");
-        return ESP_OK;
+    if (!bzm_validation_runtime_prepare_restart()) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(
+            req,
+            "Bonanza restart blocked: verified OFF_SAFE ownership unavailable");
     }
 
-    cJSON_AddStringToObject(root, "message", "System will restart shortly.");
+    httpd_resp_set_type(req, "application/json");
+    ESP_LOGI(TAG, "Restarting System because of API Request");
 
-    // Send HTTP response before restarting
-    esp_err_t res = HTTP_send_json(req, root, &api_common_prebuffer_len);
-
-    cJSON_Delete(root);
+    /* Static response avoids an allocation/panic window before restart. */
+    esp_err_t res = httpd_resp_sendstr(
+        req, "{\"message\":\"System will restart shortly.\"}");
 
     // Delay to ensure the response is sent
     vTaskDelay(1000 / portTICK_PERIOD_MS);
@@ -1265,6 +1324,8 @@ esp_err_t POST_WWW_update(httpd_req_t * req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Not allowed in AP mode");
         return ESP_OK;
     }
+    bzm_ota_guard_t ota_guard;
+    if (!bzm_ota_begin(req, &ota_guard)) return ESP_OK;
 
     GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = true;
     snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_filename, 20, "www.bin");
@@ -1276,21 +1337,36 @@ esp_err_t POST_WWW_update(httpd_req_t * req)
     const esp_partition_t * www_partition =
         esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "www");
     if (www_partition == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "WWW partition not found");
-        return ESP_OK;
+        GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = false;
+        return bzm_ota_error_after_release(
+            req, &ota_guard, HTTPD_500_INTERNAL_SERVER_ERROR,
+            "WWW partition not found");
     }
 
     // Don't attempt to write more than what can be stored in the partition
     if (remaining > www_partition->size) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "File provided is too large for device");
-        return ESP_OK;
+        GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = false;
+        return bzm_ota_error_after_release(
+            req, &ota_guard, HTTPD_400_BAD_REQUEST,
+            "File provided is too large for device");
     }
 
     // Erase the entire www partition before writing, in chunks to prevent WDT timeout
     size_t erase_size = 65536; // 64KB chunks
     for (size_t offset = 0; offset < www_partition->size; offset += erase_size) {
         size_t size_to_erase = MIN(erase_size, www_partition->size - offset);
-        ESP_ERROR_CHECK(esp_partition_erase_range(www_partition, offset, size_to_erase));
+        esp_err_t erase_result = esp_partition_erase_range(
+            www_partition, offset, size_to_erase);
+        if (erase_result != ESP_OK) {
+            ESP_LOGE(TAG, "WWW erase failed at offset %zu: %s", offset,
+                     esp_err_to_name(erase_result));
+            snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20,
+                     "Erase Error");
+            GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = false;
+            return bzm_ota_error_after_release(
+                req, &ota_guard, HTTPD_500_INTERNAL_SERVER_ERROR,
+                "Erase Error");
+        }
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 
@@ -1302,14 +1378,18 @@ esp_err_t POST_WWW_update(httpd_req_t * req)
             continue;
         } else if (recv_len <= 0) {
             snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Protocol Error");
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Protocol Error");
-            return ESP_OK;
+            GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = false;
+            return bzm_ota_error_after_release(
+                req, &ota_guard, HTTPD_500_INTERNAL_SERVER_ERROR,
+                "Protocol Error");
         }
 
         if (esp_partition_write(www_partition, www_partition->size - remaining, (const void *) buf, recv_len) != ESP_OK) {
             snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Write Error");
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Write Error");
-            return ESP_OK;
+            GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = false;
+            return bzm_ota_error_after_release(
+                req, &ota_guard, HTTPD_500_INTERNAL_SERVER_ERROR,
+                "Write Error");
         }
 
 
@@ -1323,14 +1403,229 @@ esp_err_t POST_WWW_update(httpd_req_t * req)
             vTaskDelay(10 / portTICK_PERIOD_MS);
         }
     }
+    snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Finished...");
+    GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = false;
+    if (!bzm_ota_guard_release(&ota_guard)) {
+        snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20,
+                 "Safe-off Error");
+        return httpd_resp_send_err(
+            req, HTTPD_500_INTERNAL_SERVER_ERROR,
+            "WWW written but Bonanza safe-off release failed");
+    }
+
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "WWW update complete\n");
-
-    snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Finished...");
     vTaskDelay(1000 / portTICK_PERIOD_MS);
-    GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = false;
 
     return ESP_OK;
+}
+
+static cJSON *bridge_update_status_json(void)
+{
+    bzm_bridge_update_status_t status;
+    BZM_bridge_update_get_status(&status);
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) return NULL;
+    cJSON_AddStringToObject(root, "state",
+                            bzm_bridge_update_state_name(status.state));
+    cJSON_AddNumberToObject(root, "progress", status.progress_percent);
+    cJSON_AddNumberToObject(root, "imageSize", status.image_size);
+    cJSON_AddBoolToObject(root, "running", status.running);
+    cJSON_AddBoolToObject(root, "versionQuerySupported",
+                          status.version_query_supported);
+    if (status.current_version[0] != '\0') {
+        cJSON_AddStringToObject(root, "currentVersion",
+                                status.current_version);
+    } else {
+        cJSON_AddNullToObject(root, "currentVersion");
+    }
+    if (status.error[0] != '\0') {
+        cJSON_AddStringToObject(root, "error", status.error);
+    } else {
+        cJSON_AddNullToObject(root, "error");
+    }
+    return root;
+}
+
+static esp_err_t GET_bridge_info(httpd_req_t *req)
+{
+    if (is_network_allowed(req) != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED,
+                                   "Unauthorized");
+    }
+    if (set_cors_headers(req) != ESP_OK) {
+        httpd_resp_send_500(req);
+        return ESP_OK;
+    }
+
+    bzm_bridge_info_t info;
+    esp_err_t info_err = BZM_bridge_get_info(&info);
+    bool available = info_err == ESP_OK || info_err == ESP_ERR_NOT_SUPPORTED;
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Memory allocation failed");
+    }
+    cJSON_AddBoolToObject(root, "available", available);
+    cJSON_AddBoolToObject(root, "versionQuerySupported",
+                          info_err == ESP_OK);
+    if (info_err == ESP_OK) {
+        cJSON_AddStringToObject(root, "version", info.version);
+        cJSON_AddNumberToObject(root, "protocolMajor",
+                                info.protocol_major);
+        cJSON_AddNumberToObject(root, "protocolMinor",
+                                info.protocol_minor);
+    } else {
+        cJSON_AddNullToObject(root, "version");
+        cJSON_AddNullToObject(root, "protocolMajor");
+        cJSON_AddNullToObject(root, "protocolMinor");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t result = HTTP_send_json(
+        req, root, &bridge_api_prebuffer_len);
+    cJSON_Delete(root);
+    return result;
+}
+
+static esp_err_t GET_bridge_update_status(httpd_req_t *req)
+{
+    if (is_network_allowed(req) != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED,
+                                   "Unauthorized");
+    }
+    if (set_cors_headers(req) != ESP_OK) {
+        httpd_resp_send_500(req);
+        return ESP_OK;
+    }
+    cJSON *root = bridge_update_status_json();
+    if (root == NULL) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Memory allocation failed");
+    }
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t result = HTTP_send_json(
+        req, root, &bridge_api_prebuffer_len);
+    cJSON_Delete(root);
+    return result;
+}
+
+static esp_err_t bridge_send_error(httpd_req_t *req, const char *status,
+                                   const char *message)
+{
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_sendstr(req, message);
+}
+
+static esp_err_t POST_bridge_firmware(httpd_req_t *req)
+{
+    if (is_network_allowed(req) != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED,
+                                   "Unauthorized");
+    }
+    if (set_cors_headers(req) != ESP_OK) {
+        httpd_resp_send_500(req);
+        return ESP_OK;
+    }
+
+    wifi_mode_t mode;
+    esp_wifi_get_mode(&mode);
+    if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Not allowed in AP mode");
+        return ESP_OK;
+    }
+    if (pthread_mutex_trylock(&bridge_upload_lock) != 0) {
+        bridge_send_error(req, "409 Conflict",
+                          "A bridge upload is already in progress");
+        return ESP_OK;
+    }
+    if (BZM_bridge_update_is_running()) {
+        bridge_send_error(req, "409 Conflict",
+                          "A bridge update is already in progress");
+        pthread_mutex_unlock(&bridge_upload_lock);
+        return ESP_OK;
+    }
+
+    uint8_t *image = NULL;
+    esp_err_t result = ESP_OK;
+    if (req->content_len < 0x108 ||
+        req->content_len > BZM_BRIDGE_FLASH_CAPACITY) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "Invalid bridge firmware size");
+        goto done;
+    }
+    if (!GLOBAL_STATE->psram_is_available ||
+        !esp_psram_is_initialized()) {
+        bridge_send_error(req, "503 Service Unavailable",
+                          "PSRAM is required for bridge updates");
+        goto done;
+    }
+
+    image = heap_caps_malloc(req->content_len,
+                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (image == NULL) {
+        bridge_send_error(req, "503 Service Unavailable",
+                          "Unable to stage bridge firmware");
+        goto done;
+    }
+
+    size_t received = 0;
+    unsigned int consecutive_timeouts = 0;
+    while (received < (size_t)req->content_len) {
+        int count = httpd_req_recv(
+            req, (char *)image + received,
+            MIN((size_t)1024, (size_t)req->content_len - received));
+        if (count == HTTPD_SOCK_ERR_TIMEOUT && consecutive_timeouts++ < 10) {
+            continue;
+        }
+        if (count <= 0) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                "Bridge firmware upload failed");
+            goto done;
+        }
+        consecutive_timeouts = 0;
+        received += count;
+    }
+
+    esp_err_t validation = bzm_bridge_update_validate_image(
+        image, received);
+    if (validation != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "Invalid RP2040 raw firmware image");
+        goto done;
+    }
+
+    esp_err_t start_err = BZM_bridge_update_start(
+        GLOBAL_STATE, image, received);
+    if (start_err != ESP_OK) {
+        if (start_err == ESP_ERR_INVALID_STATE) {
+            bridge_send_error(req, "409 Conflict",
+                              "A bridge update is already in progress");
+        } else {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                "Unable to start bridge update");
+        }
+        goto done;
+    }
+    image = NULL; /* The update task owns the staged image. */
+
+    cJSON *root = bridge_update_status_json();
+    if (root == NULL) {
+        httpd_resp_send_500(req);
+        goto done;
+    }
+    httpd_resp_set_status(req, "202 Accepted");
+    httpd_resp_set_type(req, "application/json");
+    result = HTTP_send_json(req, root, &bridge_api_prebuffer_len);
+    cJSON_Delete(root);
+
+done:
+    free(image);
+    pthread_mutex_unlock(&bridge_upload_lock);
+    return result;
 }
 
 /*
@@ -1349,6 +1644,8 @@ esp_err_t POST_OTA_update(httpd_req_t * req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Not allowed in AP mode");
         return ESP_OK;
     }
+    bzm_ota_guard_t ota_guard;
+    if (!bzm_ota_begin(req, &ota_guard)) return ESP_OK;
     
     GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = true;
     snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_filename, 20, "esp-miner.bin");
@@ -1359,7 +1656,14 @@ esp_err_t POST_OTA_update(httpd_req_t * req)
     int remaining = req->content_len;
 
     const esp_partition_t * ota_partition = esp_ota_get_next_update_partition(NULL);
-    ESP_ERROR_CHECK(esp_ota_begin(ota_partition, OTA_SIZE_UNKNOWN, &ota_handle));
+    if (ota_partition == NULL ||
+        esp_ota_begin(ota_partition, OTA_SIZE_UNKNOWN, &ota_handle) !=
+            ESP_OK) {
+        GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = false;
+        return bzm_ota_error_after_release(
+            req, &ota_guard, HTTPD_500_INTERNAL_SERVER_ERROR,
+            "Unable to begin OTA update");
+    }
 
     int chunks = 0;
     while (remaining > 0) {
@@ -1371,17 +1675,22 @@ esp_err_t POST_OTA_update(httpd_req_t * req)
 
             // Serious Error: Abort OTA
         } else if (recv_len <= 0) {
+            esp_ota_abort(ota_handle);
             snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Protocol Error");
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Protocol Error");
-            return ESP_OK;
+            GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = false;
+            return bzm_ota_error_after_release(
+                req, &ota_guard, HTTPD_500_INTERNAL_SERVER_ERROR,
+                "Protocol Error");
         }
 
         // Successful Upload: Flash firmware chunk
         if (esp_ota_write(ota_handle, (const void *) buf, recv_len) != ESP_OK) {
             esp_ota_abort(ota_handle);
             snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Write Error");
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Write Error");
-            return ESP_OK;
+            GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = false;
+            return bzm_ota_error_after_release(
+                req, &ota_guard, HTTPD_500_INTERNAL_SERVER_ERROR,
+                "Write Error");
         }
 
         uint8_t percentage = 100 - ((remaining * 100 / req->content_len));
@@ -1399,11 +1708,20 @@ esp_err_t POST_OTA_update(httpd_req_t * req)
     // Validate and switch to new OTA image and reboot
     if (esp_ota_end(ota_handle) != ESP_OK || esp_ota_set_boot_partition(ota_partition) != ESP_OK) {
         snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Validation Error");
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Validation / Activation Error");
-        return ESP_OK;
+        GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = false;
+        return bzm_ota_error_after_release(
+            req, &ota_guard, HTTPD_500_INTERNAL_SERVER_ERROR,
+            "Validation / Activation Error");
     }
 
     snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Rebooting...");
+
+    if (!bzm_ota_guard_retain_for_reboot(&ota_guard)) {
+        GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = false;
+        return bzm_ota_error_after_release(
+            req, &ota_guard, HTTPD_500_INTERNAL_SERVER_ERROR,
+            "Unable to retain Bonanza OTA ownership for reboot");
+    }
 
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "Firmware update complete, rebooting now!\n");
@@ -1445,7 +1763,7 @@ esp_err_t start_rest_server(void * pvParameters)
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.stack_size = 8192;
     config.max_open_sockets = 20;
-    config.max_uri_handlers = 25;
+    config.max_uri_handlers = 36;
     config.close_fn = websocket_close_fn;
     config.lru_purge_enable = true;
 
@@ -1588,6 +1906,44 @@ esp_err_t start_rest_server(void * pvParameters)
         .user_ctx = NULL
     };
     httpd_register_uri_handler(server, &update_post_ota_www);
+
+    /*
+     * The bridge is recoverable even when its UART firmware is broken, so
+     * route availability follows the configured board model rather than a
+     * successful bridge probe. Non-BZM products do not register these URIs.
+     */
+    if (bzm_bridge_update_board_supported(&GLOBAL_STATE->DEVICE_CONFIG)) {
+        ESP_ERROR_CHECK(bzm_validation_api_register(server, rest_context));
+
+        httpd_uri_t bridge_info_get_uri = {
+            .uri = "/api/system/bridge",
+            .method = HTTP_GET,
+            .handler = GET_bridge_info,
+            .user_ctx = rest_context,
+        };
+        ESP_ERROR_CHECK(httpd_register_uri_handler(
+            server, &bridge_info_get_uri));
+
+        if (bzm_bridge_update_supported(&GLOBAL_STATE->DEVICE_CONFIG)) {
+            httpd_uri_t bridge_firmware_post_uri = {
+                .uri = "/api/system/bridge/firmware",
+                .method = HTTP_POST,
+                .handler = POST_bridge_firmware,
+                .user_ctx = rest_context,
+            };
+            ESP_ERROR_CHECK(httpd_register_uri_handler(
+                server, &bridge_firmware_post_uri));
+
+            httpd_uri_t bridge_status_get_uri = {
+                .uri = "/api/system/bridge/firmware/status",
+                .method = HTTP_GET,
+                .handler = GET_bridge_update_status,
+                .user_ctx = rest_context,
+            };
+            ESP_ERROR_CHECK(httpd_register_uri_handler(
+                server, &bridge_status_get_uri));
+        }
+    }
 
     httpd_uri_t ws = {
         .uri = "/api/ws", 

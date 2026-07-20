@@ -22,6 +22,7 @@
 #include "i2c_bitaxe.h"
 #include "INA260.h"
 #include "adc.h"
+#include "asic.h"
 #include "connect.h"
 #include "nvs_config.h"
 #include "display.h"
@@ -251,7 +252,8 @@ esp_err_t SYSTEM_init_peripherals(GlobalState * GLOBAL_STATE) {
     }
 
     // For self-test, we set a stable known voltage before ASIC initialization
-    if (GLOBAL_STATE->SELF_TEST_MODULE.is_active) {
+    if (GLOBAL_STATE->SELF_TEST_MODULE.is_active &&
+        !GLOBAL_STATE->DEVICE_CONFIG.bonanza_bridge) {
         vTaskDelay(500 / portTICK_PERIOD_MS);
 
         ret = VCORE_set_voltage(GLOBAL_STATE, (float)GLOBAL_STATE->DEVICE_CONFIG.family.asic.default_voltage_mv / 1000.0f);
@@ -275,6 +277,9 @@ esp_err_t SYSTEM_init_peripherals(GlobalState * GLOBAL_STATE) {
 void SYSTEM_clean_jobs_queue(GlobalState * GLOBAL_STATE)
 {
     ESP_LOGI(TAG, "Clean Jobs: clearing queue");
+    if (!ASIC_clear_work(GLOBAL_STATE)) {
+        ESP_LOGE(TAG, "ASIC clean-job barrier failed");
+    }
     queue_clear(&GLOBAL_STATE->stratum_queue);
 
     asic_job_store_invalidate_all(&GLOBAL_STATE->asic_job_store);

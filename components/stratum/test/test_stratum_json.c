@@ -1,6 +1,36 @@
 #include "unity.h"
 #include "stratum_api.h"
 
+typedef struct {
+    bool allow;
+    unsigned int calls;
+} restart_guard_test_state_t;
+
+static bool test_restart_guard(void *context)
+{
+    restart_guard_test_state_t *state = context;
+    state->calls++;
+    return state->allow;
+}
+
+TEST_CASE("Stratum fatal restart obeys the installed safety guard",
+          "[stratum][restart]")
+{
+    restart_guard_test_state_t state = {.allow = false};
+
+    STRATUM_V1_set_restart_guard(NULL, NULL);
+    TEST_ASSERT_TRUE(STRATUM_V1_prepare_restart());
+
+    STRATUM_V1_set_restart_guard(test_restart_guard, &state);
+    TEST_ASSERT_FALSE(STRATUM_V1_prepare_restart());
+    TEST_ASSERT_EQUAL_UINT32(1, state.calls);
+
+    state.allow = true;
+    TEST_ASSERT_TRUE(STRATUM_V1_prepare_restart());
+    TEST_ASSERT_EQUAL_UINT32(2, state.calls);
+    STRATUM_V1_set_restart_guard(NULL, NULL);
+}
+
 TEST_CASE("Parse stratum method", "[stratum]")
 {
     StratumApiV1Message stratum_api_v1_message = {};

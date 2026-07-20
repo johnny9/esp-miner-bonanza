@@ -16,6 +16,7 @@ typedef struct {
     int (*set_max_baud)(void);
     bool (*send_work)(GlobalState *state,
                       const mining_template_t *template);
+    bool (*clear_work)(GlobalState *state);
     void (*set_version_mask)(uint32_t mask);
     float (*set_hash_frequency)(float frequency);
     void (*set_nonce_space)(double nonce_percent, float frequency,

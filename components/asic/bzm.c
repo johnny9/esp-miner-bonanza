@@ -4,6 +4,33 @@
 
 #include "utils.h"
 
+static size_t bzm_build_versions(uint32_t base_version,
+                                 uint32_t version_mask,
+                                 bool enhanced_mode,
+                                 uint32_t versions[BZM_VERSION_VARIANTS])
+{
+    versions[0] = base_version;
+    if (!enhanced_mode || version_mask == 0) {
+        return 1;
+    }
+
+    /* Match BIRDS/cgminer's vmask_001[0,2,4,8] construction. The
+     * least-significant non-zero hex nibble is one sub-job, the remaining
+     * mask is the other, and the fourth sub-job combines both. */
+    unsigned trailing_nibbles = 0;
+    uint32_t shifted_mask = version_mask;
+    while ((shifted_mask & 0x0fU) == 0U) {
+        shifted_mask >>= 4;
+        trailing_nibbles++;
+    }
+    uint32_t low_nibble = (shifted_mask & 0x0fU)
+        << (trailing_nibbles * 4U);
+    versions[1] = base_version | low_nibble;
+    versions[2] = base_version | (version_mask - low_nibble);
+    versions[3] = base_version | version_mask;
+    return BZM_VERSION_VARIANTS;
+}
+
 bool bzm_work_build(const asic_work_t *source, uint16_t engine_id,
                     uint8_t logical_sequence, uint8_t timestamp_count,
                     uint8_t lead_zeros, bool enhanced_mode,
@@ -36,18 +63,22 @@ bool bzm_work_build(const asic_work_t *source, uint16_t engine_id,
 
     uint8_t midstate_data[64];
     uint8_t digest[32];
-    uint32_t version = template->version;
     memcpy(midstate_data + 4, header_prev_hash, sizeof(header_prev_hash));
     memcpy(midstate_data + 36, header_merkle_root, 28);
 
-    size_t count = enhanced_mode && template->version_mask != 0
-        ? BZM_VERSION_VARIANTS : 1;
+    size_t count = bzm_build_versions(template->version,
+                                      template->version_mask,
+                                      enhanced_mode, work->versions);
     for (size_t i = 0; i < count; ++i) {
-        work->versions[i] = version;
+        uint32_t version = work->versions[i];
         memcpy(midstate_data, &version, sizeof(version));
         midstate_sha256_bin(midstate_data, sizeof(midstate_data), digest);
-        reverse_32bit_words(digest, work->midstates[i]);
-        version = increment_bitmask(version, template->version_mask);
+        /* mbedTLS exposes each SHA-256 state word as big-endian bytes.
+         * BIRDS/cgminer writes native little-endian uint32_t h0..h7 words to
+         * Bonanza, so swap bytes within each word while preserving the word
+         * order. Bitmain-family packets instead reverse the word order. */
+        reverse_endianness_per_word(digest);
+        memcpy(work->midstates[i], digest, sizeof(digest));
     }
     work->midstate_count = count;
     return true;
@@ -84,32 +115,32 @@ bool bzm_tdm_result_decode(
     return true;
 }
 
+bool bzm_raw_result_has_valid_nonce(const bzm_raw_result_t *result)
+{
+    return result != NULL && (result->status & 0x08U) != 0U;
+}
+
 bool bzm_engine_physical_id(uint16_t logical_engine_id,
                             uint16_t *physical_engine_id)
 {
-    if (logical_engine_id >= BZM_ENGINES_PER_ASIC ||
-        physical_engine_id == NULL) {
+    bzm_engine_location_t engine;
+    if (physical_engine_id == NULL ||
+        !bzm_topology_engine_at(logical_engine_id, &engine)) {
         return false;
     }
-    uint16_t row = logical_engine_id % BZM_ENGINE_ROWS;
-    uint16_t column = logical_engine_id / BZM_ENGINE_ROWS;
-    *physical_engine_id = (column << 6) | row;
+    *physical_engine_id = engine.physical_id;
     return true;
 }
 
 bool bzm_engine_logical_id(uint16_t physical_engine_id,
                            uint16_t *logical_engine_id)
 {
+    bzm_engine_location_t engine;
     if (logical_engine_id == NULL ||
-        physical_engine_id >= BZM_MAX_ENGINE_COUNT) {
+        !bzm_topology_from_physical_id(physical_engine_id, &engine)) {
         return false;
     }
-    uint16_t row = physical_engine_id & 0x3f;
-    uint16_t column = physical_engine_id >> 6;
-    if (row >= BZM_ENGINE_ROWS || column >= BZM_ENGINE_COLUMNS) {
-        return false;
-    }
-    *logical_engine_id = column * BZM_ENGINE_ROWS + row;
+    *logical_engine_id = engine.topology_index;
     return true;
 }
 

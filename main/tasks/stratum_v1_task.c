@@ -22,7 +22,6 @@
 #include "freertos/task.h"
 
 #define MAX_RETRY_ATTEMPTS 3
-#define MAX_CRITICAL_RETRY_ATTEMPTS 5
 #define MAX_EXTRANONCE_2_LEN 32
 
 #define PORT CONFIG_STRATUM_PORT
@@ -179,9 +178,12 @@ void stratum_v1_task(void *pvParameters)
     // Set V1-specific free function for the work queue
     GLOBAL_STATE->stratum_queue.free_fn = (void (*)(void *))STRATUM_V1_free_mining_notify;
 
-    STRATUM_V1_initialize_buffer();
+    if (!STRATUM_V1_initialize_buffer()) {
+        ESP_LOGE(TAG, "Unable to initialize Stratum buffers");
+        vTaskDelete(NULL);
+        return;
+    }
     int retry_attempts = 0;
-    int retry_critical_attempts = 0;
 
     ESP_LOGI(TAG, "Opening connection to pool: %s:%d", stratum_url, port);
     while (1) {
@@ -230,21 +232,14 @@ void stratum_v1_task(void *pvParameters)
 
         tls_mode tls = GLOBAL_STATE->SYSTEM_MODULE.is_using_fallback ? GLOBAL_STATE->SYSTEM_MODULE.fallback_pool_tls : GLOBAL_STATE->SYSTEM_MODULE.pool_tls;
         char * cert = GLOBAL_STATE->SYSTEM_MODULE.is_using_fallback ? GLOBAL_STATE->SYSTEM_MODULE.fallback_pool_cert : GLOBAL_STATE->SYSTEM_MODULE.pool_cert;
-        retry_critical_attempts = 0;
-
         GLOBAL_STATE->transport = STRATUM_V1_transport_init(tls, cert);
         // Check if transport was initialized
         if (GLOBAL_STATE->transport == NULL) {
             ESP_LOGE(TAG, "Transport initialization failed.");
-            if (++retry_critical_attempts > MAX_CRITICAL_RETRY_ATTEMPTS) {
-                ESP_LOGE(TAG, "Max retry attempts reached, restarting...");
-                esp_restart();
-            }
             retry_attempts++;
             vTaskDelay(5000 / portTICK_PERIOD_MS);
             continue;
         }
-        retry_critical_attempts = 0;
 
         // Use the already-resolved IP to avoid a second DNS lookup inside esp_transport_connect.
         // This prevents long DNS timeouts from blocking the lwIP stack and starving the HTTP server.

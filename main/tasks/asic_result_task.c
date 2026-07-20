@@ -1,11 +1,13 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <lwip/tcpip.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "asic.h"
 #include "asic_result_handler.h"
+#include "bzm_driver.h"
 #include "esp_log.h"
 #include "freertos/task.h"
 #include "global_state.h"
@@ -126,6 +128,14 @@ static void account_share(void *context,
     scoreboard_add(&state->SYSTEM_MODULE.scoreboard, share->nonce_diff,
                    share->job_id, share->extranonce2, share->ntime,
                    share->nonce, share->version_bits);
+    if (state->DEVICE_CONFIG.family.asic.id == BZM &&
+        bzm_running_result_meets_proof(
+            share->nonce_diff,
+            (double) CONFIG_BZM_1002_STAGE7_MIN_NONCE_DIFFICULTY)) {
+        BZM_running_record_proof();
+    } else if (state->DEVICE_CONFIG.family.asic.id == BZM) {
+        BZM_running_record_rejection();
+    }
 }
 
 static const asic_result_callbacks_t RESULT_CALLBACKS = {
@@ -176,7 +186,11 @@ void ASIC_result_task(void *pvParameters)
         }
 
         const asic_result_t *result = &event->data.share;
-        if (handle_result(state, result) == ASIC_RESULT_REJECTED_WORK) {
+        asic_result_status_t status = handle_result(state, result);
+        if (status == ASIC_RESULT_REJECTED_WORK) {
+            if (state->DEVICE_CONFIG.family.asic.id == BZM) {
+                BZM_running_record_rejection();
+            }
             ESP_LOGW(TAG, "Invalid work result found, 0x%" PRIX64,
                      result->work_handle);
         }

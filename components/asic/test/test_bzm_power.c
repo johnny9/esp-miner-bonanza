@@ -1,3 +1,4 @@
+#include <math.h>
 #include <string.h>
 
 #include "bzm_power.h"
@@ -85,9 +86,10 @@ TEST_CASE("BZM TPS profile contains every BIRDS regulator setting",
     TEST_ASSERT_EQUAL_UINT8_ARRAY(compensation, p->compensation_config, 5);
     TEST_ASSERT_EQUAL_HEX8(0x70, p->power_stage_config);
     TEST_ASSERT_EQUAL_UINT8_ARRAY(telemetry, p->telemetry_config, 6);
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, 2.8f, p->vout_command);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, BZM_TPS546_FIXED_VOUT_V,
+                             p->vout_command);
     TEST_ASSERT_EQUAL_HEX16(0x0000, p->vout_trim);
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, 3.5f, p->vout_max);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, BZM_TPS546_MAX_VOUT_V, p->vout_max);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.1f, p->vout_margin_high);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.9f, p->vout_margin_low);
     TEST_ASSERT_EQUAL_HEX16(0xe010, p->vout_transition_rate);
@@ -120,6 +122,19 @@ TEST_CASE("BZM TPS profile contains every BIRDS regulator setting",
     TEST_ASSERT_EQUAL(0, p->toff_fall);
 }
 
+TEST_CASE("BZM fixed rail accepts only off or 2.8V",
+          "[asic][bzm][power][fixed_voltage]")
+{
+    TEST_ASSERT_TRUE(bzm_power_voltage_is_allowed(0.0f));
+    TEST_ASSERT_TRUE(bzm_power_voltage_is_allowed(2.8f));
+    TEST_ASSERT_TRUE(bzm_power_voltage_is_allowed(2.8005f));
+    TEST_ASSERT_FALSE(bzm_power_voltage_is_allowed(2.7f));
+    TEST_ASSERT_FALSE(bzm_power_voltage_is_allowed(2.95f));
+    TEST_ASSERT_FALSE(bzm_power_voltage_is_allowed(3.5f));
+    TEST_ASSERT_FALSE(bzm_power_voltage_is_allowed(NAN));
+    TEST_ASSERT_FALSE(bzm_power_voltage_is_allowed(INFINITY));
+}
+
 TEST_CASE("BZM power startup is active high and validates before 5V release",
           "[asic][bzm][power][sequence]")
 {
@@ -136,6 +151,21 @@ TEST_CASE("BZM power startup is active high and validates before 5V release",
     TEST_ASSERT_EQUAL_UINT32(2, power.delay_count);
     TEST_ASSERT_EQUAL_UINT32(100, power.delays[0]);
     TEST_ASSERT_EQUAL_UINT32(100, power.delays[1]);
+}
+
+TEST_CASE("BZM rail-only stage validates power but keeps downstream 5V off",
+          "[asic][bzm][power][rail]")
+{
+    simulated_power_t power = {0};
+    const power_call_t expected[] = {
+        CALL_5V_OFF, CALL_REGULATOR_ON, CALL_DELAY, CALL_VOUT_ON,
+        CALL_DELAY, CALL_VALIDATE,
+    };
+    TEST_ASSERT_EQUAL(ESP_OK, bzm_power_set_rail_enabled(
+        &SIMULATED_POWER_OPS, &power, true));
+    TEST_ASSERT_EQUAL_UINT32(sizeof(expected) / sizeof(expected[0]),
+                             power.call_count);
+    TEST_ASSERT_EQUAL_INT_ARRAY(expected, power.calls, power.call_count);
 }
 
 TEST_CASE("BZM power validation failure reverses the complete sequence",

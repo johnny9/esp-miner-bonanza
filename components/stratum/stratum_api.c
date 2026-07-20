@@ -14,7 +14,6 @@
 #include "esp_crt_bundle.h"
 #include "utils.h"
 #include "esp_timer.h"
-#include "esp_heap_caps.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -29,6 +28,32 @@ static char * json_rpc_buffer = NULL;
 static size_t json_rpc_buffer_size = 0;
 
 static RequestTiming *request_timings = NULL;
+static stratum_restart_guard_fn restart_guard = NULL;
+static void *restart_guard_context = NULL;
+
+void STRATUM_V1_set_restart_guard(stratum_restart_guard_fn guard,
+                                  void *context)
+{
+    restart_guard = guard;
+    restart_guard_context = context;
+}
+
+bool STRATUM_V1_prepare_restart(void)
+{
+    return restart_guard == NULL || restart_guard(restart_guard_context);
+}
+
+static bool restart_after_fatal_error(const char *reason)
+{
+    ESP_LOGE(TAG, "Fatal Stratum error: %s", reason);
+    if (!STRATUM_V1_prepare_restart()) {
+        ESP_LOGE(TAG, "Restart blocked because safe-off could not be verified");
+        return false;
+    }
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    esp_restart();
+    return false;
+}
 
 static RequestTiming* get_request_timing(int request_id) {
     if (request_id < 0) return NULL;
@@ -90,24 +115,34 @@ esp_transport_handle_t STRATUM_V1_transport_init(tls_mode tls, char * cert)
     return transport;
 }
 
-void STRATUM_V1_initialize_buffer()
+bool STRATUM_V1_initialize_buffer(void)
 {
     // Free any existing buffer (may be non-NULL if a previous V1 task was running)
     free(json_rpc_buffer);
+    json_rpc_buffer = NULL;
+    json_rpc_buffer_size = 0;
 
     json_rpc_buffer = malloc(BUFFER_SIZE);
-    json_rpc_buffer_size = BUFFER_SIZE;
     if (json_rpc_buffer == NULL) {
-        printf("Error: Failed to allocate memory for buffer\n");
-        exit(1);
+        return restart_after_fatal_error(
+            "failed to allocate the JSON-RPC buffer");
     }
+    json_rpc_buffer_size = BUFFER_SIZE;
     memset(json_rpc_buffer, 0, BUFFER_SIZE);
 
     if (request_timings == NULL) {
-        request_timings = heap_caps_malloc(sizeof(RequestTiming) * MAX_REQUEST_IDS, MALLOC_CAP_SPIRAM);
+        /*
+         * Use malloc so allocation failure returns NULL to the guarded fatal
+         * path. A MALLOC_CAP_SPIRAM request invokes the application's global
+         * abort hook before this component can prove BZM safe-off.
+         */
+        request_timings = malloc(sizeof(RequestTiming) * MAX_REQUEST_IDS);
         if (request_timings == NULL) {
-            printf("Error: Failed to allocate memory for request_timings\n");
-            exit(1);
+            free(json_rpc_buffer);
+            json_rpc_buffer = NULL;
+            json_rpc_buffer_size = 0;
+            return restart_after_fatal_error(
+                "failed to allocate Stratum request timings");
         }
     }
 
@@ -115,6 +150,7 @@ void STRATUM_V1_initialize_buffer()
         request_timings[i].timestamp_us = 0;
         request_timings[i].tracking = false;
     }
+    return true;
 }
 
 void cleanup_stratum_buffer()
@@ -127,7 +163,7 @@ void cleanup_stratum_buffer()
     }
 }
 
-static void realloc_json_buffer(size_t len)
+static bool realloc_json_buffer(size_t len)
 {
     size_t old, new;
 
@@ -135,28 +171,27 @@ static void realloc_json_buffer(size_t len)
     new = old + len + 1;
 
     if (new < json_rpc_buffer_size) {
-        return;
+        return true;
     }
 
     new = new + (BUFFER_SIZE - (new % BUFFER_SIZE));
     void * new_sockbuf = realloc(json_rpc_buffer, new);
 
     if (new_sockbuf == NULL) {
-        fprintf(stderr, "Error: realloc failed in recalloc_sock()\n");
-        ESP_LOGI(TAG, "Restarting System because of ERROR: realloc failed in recalloc_sock");
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-        esp_restart();
+        return restart_after_fatal_error(
+            "failed to grow the JSON-RPC buffer");
     }
 
     json_rpc_buffer = new_sockbuf;
     memset(json_rpc_buffer + old, 0, new - old);
     json_rpc_buffer_size = new;
+    return true;
 }
 
 char * STRATUM_V1_receive_jsonrpc_line(esp_transport_handle_t transport)
 {
     if (json_rpc_buffer == NULL) {
-        STRATUM_V1_initialize_buffer();
+        if (!STRATUM_V1_initialize_buffer()) return NULL;
     }
     char *line = NULL;
     char recv_buffer[BUFFER_SIZE];
@@ -189,7 +224,7 @@ char * STRATUM_V1_receive_jsonrpc_line(esp_transport_handle_t transport)
             return NULL;
         }
         if (nbytes > 0) {
-            realloc_json_buffer(nbytes);
+            if (!realloc_json_buffer(nbytes)) return NULL;
             strncat(json_rpc_buffer, recv_buffer, nbytes);
         }
     }

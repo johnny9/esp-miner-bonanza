@@ -230,6 +230,10 @@ static esp_err_t bonanza_set_regulator_enabled(void *context, bool enabled)
 static esp_err_t bonanza_set_vout(void *context, float volts)
 {
     GlobalState *state = context;
+    if (!bzm_power_voltage_is_allowed(volts)) {
+        ESP_LOGE(TAG, "Bitaxe 1002 TPS rail accepts only off or 2.800V");
+        return ESP_ERR_INVALID_ARG;
+    }
     return state->DEVICE_CONFIG.TPS546 ? TPS546_set_vout(volts)
                                        : ESP_ERR_INVALID_STATE;
 }
@@ -254,6 +258,7 @@ static esp_err_t bonanza_validate_power(void *context)
         snapshot.read_vin < BZM_TPS546_BIRDS_PROFILE.vin_off ||
         snapshot.read_vout < 2.65f || snapshot.read_vout > 2.95f ||
         snapshot.read_temp1 >= BZM_TPS546_BIRDS_PROFILE.ot_fault_limit) {
+        TPS546_log_snapshot(&snapshot);
         ESP_LOGE(TAG, "TPS546 status/telemetry validation failed");
         return ESP_FAIL;
     }
@@ -274,12 +279,30 @@ static const bzm_power_ops_t BONANZA_POWER_OPS = {
     .delay_ms = bonanza_power_delay,
 };
 
+esp_err_t VCORE_bzm_set_rail_enabled(GlobalState *GLOBAL_STATE, bool enabled)
+{
+    if (GLOBAL_STATE == NULL ||
+        !GLOBAL_STATE->DEVICE_CONFIG.bonanza_bridge ||
+        !GLOBAL_STATE->DEVICE_CONFIG.TPS546) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return bzm_power_set_rail_enabled(
+        &BONANZA_POWER_OPS, GLOBAL_STATE, enabled);
+}
+
+esp_err_t VCORE_bzm_snapshot(TPS546_StatusSnapshot *snapshot, bool *pgood)
+{
+    if (snapshot == NULL || pgood == NULL) return ESP_ERR_INVALID_ARG;
+    *pgood = gpio_get_level(GPIO_TPS546_PGOOD) != 0;
+    return TPS546_snapshot_status(snapshot);
+}
+
 esp_err_t VCORE_set_voltage(GlobalState * GLOBAL_STATE, float core_voltage)
 {
     ESP_LOGI(TAG, "Set ASIC voltage = %.3fV", core_voltage);
 
     if (GLOBAL_STATE->DEVICE_CONFIG.bonanza_bridge) {
-        if (core_voltage != 0.0f && fabsf(core_voltage - 2.8f) > 0.001f) {
+        if (!bzm_power_voltage_is_allowed(core_voltage)) {
             ESP_LOGE(TAG, "Bitaxe 1002 TPS rail is fixed at 2.800V");
             return ESP_ERR_INVALID_ARG;
         }

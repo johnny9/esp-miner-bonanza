@@ -177,11 +177,17 @@ void bzm_reactor_finish_flush(bzm_reactor_t *reactor)
     reactor->next_sequence = 0;
     reactor->flush_pending = false;
     reactor->flush_complete = false;
+    reactor->results_quarantined = true;
 }
 
 bool bzm_reactor_is_flush_pending(const bzm_reactor_t *reactor)
 {
     return reactor != NULL && reactor->flush_pending;
+}
+
+bool bzm_reactor_results_quarantined(const bzm_reactor_t *reactor)
+{
+    return reactor != NULL && reactor->results_quarantined;
 }
 
 bool bzm_reactor_clear_work(bzm_reactor_t *reactor)
@@ -200,6 +206,7 @@ bool bzm_reactor_clear_work(bzm_reactor_t *reactor)
         reactor->next_sequence = 0;
         memset(reactor->next_engine_sequence, 0,
                sizeof(reactor->next_engine_sequence));
+        reactor->results_quarantined = true;
         return true;
     }
     if (!bzm_reactor_begin_flush(reactor)) return false;
@@ -294,6 +301,8 @@ bzm_assign_status_t bzm_reactor_assign(bzm_reactor_t *reactor,
 
     reactor->next_engine =
         (schedule_index + 1) % reactor->config.engine_count;
+    if (reactor->next_engine == 0)
+        reactor->results_quarantined = false;
     reactor->next_engine_sequence[schedule_index] =
         (uint8_t)((logical_sequence + 1) % sequence_space(reactor));
     if (assigned_work != NULL) *assigned_work = work;
@@ -393,6 +402,7 @@ bzm_assign_status_t bzm_reactor_dispatch(bzm_reactor_t *reactor,
     reactor->next_engine = 0;
     reactor->next_sequence++;
     reactor->current_batch_complete = true;
+    reactor->results_quarantined = false;
     if (assigned_count != NULL) *assigned_count = completed;
     return BZM_ASSIGN_OK;
 }

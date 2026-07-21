@@ -1063,6 +1063,7 @@ TEST_CASE("BZM clean-job barrier rejects stale results and invalidates handles",
     asic_event_t event;
     TEST_ASSERT_TRUE(bzm_reactor_clear_work(reactor));
     TEST_ASSERT_FALSE(bzm_reactor_is_flush_pending(reactor));
+    TEST_ASSERT_TRUE(bzm_reactor_results_quarantined(reactor));
     TEST_ASSERT_EQUAL_UINT32(1, transport->flush_count);
     TEST_ASSERT_FALSE(bzm_reactor_map_result(reactor, &old_result, &event));
     mining_template_t snapshot;
@@ -1072,6 +1073,7 @@ TEST_CASE("BZM clean-job barrier rejects stale results and invalidates handles",
     template = bzm_template("new", false);
     TEST_ASSERT_EQUAL(BZM_ASSIGN_OK,
                       bzm_reactor_dispatch(reactor, &template, NULL));
+    TEST_ASSERT_FALSE(bzm_reactor_results_quarantined(reactor));
     asic_work_handle_t new_handle =
         transport->work[transport->write_count - 1].source.handle;
     TEST_ASSERT_NOT_EQUAL((uint32_t)old_handle, (uint32_t)new_handle);
@@ -1097,8 +1099,32 @@ TEST_CASE("BZM idle clean-job barrier does not disturb the hardware link",
     TEST_ASSERT_TRUE(bzm_reactor_clear_work(reactor));
     TEST_ASSERT_EQUAL_UINT32(0, transport->flush_count);
     TEST_ASSERT_FALSE(bzm_reactor_is_flush_pending(reactor));
+    TEST_ASSERT_TRUE(bzm_reactor_results_quarantined(reactor));
     mining_template_t snapshot;
     TEST_ASSERT_FALSE(asic_job_store_snapshot(store, handle, &snapshot));
+
+    mining_template_free(&template);
+    free(transport);
+    free(reactor);
+    delete_store(store);
+}
+
+TEST_CASE("BZM quarantines clean-job results through the full engine rotation",
+          "[asic][bzm][reactor][clean-job][scheduler]")
+{
+    asic_job_store_t *store = new_store();
+    simulated_transport_t *transport = new_transport();
+    bzm_reactor_t *reactor = new_reactor(store, transport, 2);
+    mining_template_t template = bzm_template("replacement", false);
+
+    TEST_ASSERT_TRUE(bzm_reactor_clear_work(reactor));
+    TEST_ASSERT_TRUE(bzm_reactor_results_quarantined(reactor));
+    TEST_ASSERT_EQUAL(BZM_ASSIGN_OK,
+                      bzm_reactor_assign(reactor, &template, NULL));
+    TEST_ASSERT_TRUE(bzm_reactor_results_quarantined(reactor));
+    TEST_ASSERT_EQUAL(BZM_ASSIGN_OK,
+                      bzm_reactor_assign(reactor, &template, NULL));
+    TEST_ASSERT_FALSE(bzm_reactor_results_quarantined(reactor));
 
     mining_template_free(&template);
     free(transport);

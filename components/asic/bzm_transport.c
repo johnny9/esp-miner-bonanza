@@ -354,6 +354,16 @@ static bool dequeue_result(bzm_serial_transport_t * transport, bzm_raw_result_t 
     return available;
 }
 
+void bzm_serial_discard_pending_results(bzm_serial_transport_t *transport)
+{
+    if (transport == NULL || !transport->io.initialized)
+        return;
+    pthread_mutex_lock(&transport->io.lock);
+    transport->io.pending_result_head = 0;
+    transport->io.pending_result_length = 0;
+    pthread_mutex_unlock(&transport->io.lock);
+}
+
 bool bzm_serial_expect_register_reply(bzm_serial_transport_t * transport, uint8_t asic_id, size_t payload_length)
 {
     if (transport == NULL || !transport->io.initialized || !addressed_asic(asic_id) || payload_length == 0 ||

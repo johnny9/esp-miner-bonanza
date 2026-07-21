@@ -81,6 +81,10 @@ typedef struct {
     uint32_t epoch;
     bool flush_pending;
     bool flush_complete;
+    /* Clean jobs invalidate every old pool handle. Results are deliberately
+     * ignored until all engines have received the replacement generation,
+     * matching the BIRDS flush boundary. */
+    bool results_quarantined;
 } bzm_reactor_t;
 
 bool bzm_reactor_init(bzm_reactor_t *reactor, asic_job_store_t *job_store,
@@ -101,6 +105,7 @@ bzm_assign_status_t bzm_reactor_dispatch(bzm_reactor_t *reactor,
 bool bzm_reactor_begin_flush(bzm_reactor_t *reactor);
 void bzm_reactor_finish_flush(bzm_reactor_t *reactor);
 bool bzm_reactor_is_flush_pending(const bzm_reactor_t *reactor);
+bool bzm_reactor_results_quarantined(const bzm_reactor_t *reactor);
 // Complete one clean-job barrier and retire every prior assignment/handle.
 // An idle reactor invalidates the store without emitting hardware flush work.
 bool bzm_reactor_clear_work(bzm_reactor_t *reactor);

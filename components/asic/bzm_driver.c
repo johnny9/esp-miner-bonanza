@@ -272,6 +272,8 @@ bool BZM_send_work(GlobalState * state, const mining_template_t * template)
                  "BZM independent engine rotation starting; dispatch interval %.0f ms",
                  BZM_FAST_JOB_INTERVAL_MS);
     }
+    bool results_were_quarantined =
+        bzm_reactor_results_quarantined(&REACTOR);
 
     bzm_work_t assigned_work;
     bzm_assign_status_t status =
@@ -293,6 +295,13 @@ bool BZM_send_work(GlobalState * state, const mining_template_t * template)
         FAST_DISPATCH_REMAINING == 1;
     if (status == BZM_ASSIGN_OK && FAST_DISPATCH_REMAINING != 0)
         --FAST_DISPATCH_REMAINING;
+    if (status == BZM_ASSIGN_OK && results_were_quarantined &&
+        !bzm_reactor_results_quarantined(&REACTOR)) {
+        /* A clean Stratum job makes every pre-flush result unsubmitable.
+         * Drain anything queued during the bounded replacement rotation
+         * before normal attribution resumes. */
+        bzm_serial_discard_pending_results(&TRANSPORT);
+    }
     pthread_mutex_unlock(&REACTOR_LOCK);
 
     if (status != BZM_ASSIGN_OK) {
@@ -355,6 +364,10 @@ asic_event_t * BZM_process_work(GlobalState * state)
     static asic_event_t event;
     pthread_mutex_lock(&REACTOR_LOCK);
     bool received = bzm_serial_read_result(&TRANSPORT, &raw, 20);
+    if (received && bzm_reactor_results_quarantined(&REACTOR)) {
+        pthread_mutex_unlock(&REACTOR_LOCK);
+        return NULL;
+    }
     bool nonce_frame = received && bzm_raw_result_has_valid_nonce(&raw);
     bool mapped = nonce_frame && bzm_reactor_map_result(&REACTOR, &raw, &event);
     bool duplicate = mapped && result_is_duplicate(&event.data.share);

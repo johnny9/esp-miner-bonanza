@@ -141,6 +141,7 @@ bool bzm_serial_cancel_register_reply(bzm_serial_transport_t * transport, uint8_
 bool bzm_serial_get_telemetry(bzm_serial_transport_t * transport, uint8_t asic_id, bzm_telemetry_sample_t * sample);
 bool bzm_serial_get_telemetry_snapshot(bzm_serial_transport_t * transport, bzm_telemetry_store_t * snapshot);
 bool bzm_serial_get_parser_stats(bzm_serial_transport_t * transport, bzm_serial_parser_stats_t * stats);
+void bzm_serial_discard_pending_results(bzm_serial_transport_t *transport);
 
 bool bzm_serial_write_register(bzm_serial_transport_t * transport, uint16_t engine_id, uint8_t offset, const void * data,
                                size_t data_len);

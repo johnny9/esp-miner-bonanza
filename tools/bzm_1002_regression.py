@@ -4,10 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import functools
 import gzip
 import hashlib
+import http.client
 import json
 import re
+import socket
+import struct
 import subprocess
 import sys
 import time
@@ -33,6 +38,42 @@ REQUIRED_UI_LABELS = (
     "Duplicates:",
     "Dispatch failures:",
 )
+
+
+REQUEST_OPENER = urllib.request.build_opener()
+
+
+class SourceAddressHTTPHandler(urllib.request.HTTPHandler):
+    """Bind device HTTP connections to a selected local IPv4 address."""
+
+    def __init__(self, source_address: str) -> None:
+        super().__init__()
+        self._source_address = (source_address, 0)
+
+    def http_open(self, request: urllib.request.Request) -> Any:
+        connection = functools.partial(
+            http.client.HTTPConnection,
+            source_address=self._source_address,
+        )
+        return self.do_open(connection, request)
+
+
+def bind_request_interface(interface: str) -> str:
+    """Bind subsequent HTTP requests to the IPv4 address on interface."""
+    global REQUEST_OPENER
+    encoded = interface.encode("utf-8")
+    if not encoded or len(encoded) > 15:
+        raise ValueError(f"invalid network interface {interface!r}")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as control:
+        result = fcntl.ioctl(
+            control.fileno(),
+            0x8915,  # Linux SIOCGIFADDR
+            struct.pack("256s", encoded),
+        )
+    source_address = socket.inet_ntoa(result[20:24])
+    REQUEST_OPENER = urllib.request.build_opener(
+        SourceAddressHTTPHandler(source_address))
+    return source_address
 
 
 @dataclass
@@ -110,7 +151,7 @@ def request_bytes(base_url: str, path: str, *, data: bytes | None = None,
             "Content-Type": "application/octet-stream",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with REQUEST_OPENER.open(request, timeout=timeout) as response:
         body = response.read()
         if response.headers.get("Content-Encoding") == "gzip" or body[:2] == b"\x1f\x8b":
             body = gzip.decompress(body)
@@ -325,7 +366,7 @@ def write_junit(report: Report, path: Path) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", help="device IP address or hostname")
-    parser.add_argument("--interface", help="source network interface recorded in the report")
+    parser.add_argument("--interface", help="source network interface used for device HTTP")
     parser.add_argument("--serial", help="serial device recorded in the report")
     parser.add_argument("--soak-seconds", type=int, default=180)
     parser.add_argument("--sample-interval", type=float, default=10)
@@ -366,6 +407,12 @@ def main() -> int:
         raise SystemExit("--ota requires both --firmware and --web")
     if not args.local_only and not args.device:
         raise SystemExit("--device is required unless --local-only is used")
+    if args.interface:
+        try:
+            report.context["sourceAddress"] = bind_request_interface(args.interface)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(
+                f"cannot bind device HTTP to interface {args.interface!r}: {exc}") from exc
 
     if not args.skip_local:
         run_command(report, "production config", [sys.executable, "tools/validate_bitaxe_1002_config.py"], repo)

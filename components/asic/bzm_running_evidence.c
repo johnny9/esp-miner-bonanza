@@ -82,6 +82,7 @@ bzm_running_evidence_result_t bzm_running_evidence_evaluate(
         config->required_chip_engine_writes == 0 ||
         config->minimum_valid_results == 0 || config->proof_timeout_ms == 0 ||
         config->recovery_timeout_ms == 0 ||
+        config->maximum_local_rejections == 0 ||
         (config->allow_mapping_recovery &&
          config->maximum_mapping_rejections == 0)) {
         return result_with(BZM_RUNNING_EVIDENCE_BAD,
@@ -130,7 +131,9 @@ bzm_running_evidence_result_t bzm_running_evidence_evaluate(
                            &observed, elapsed_ms, detail);
     }
     if (observed.locally_rejected_results != 0 &&
-        observed.local_recovery_pending) {
+        observed.local_recovery_pending &&
+        observed.local_rejection_streak >=
+            config->maximum_local_rejections) {
         snprintf(detail, sizeof(detail),
                  "waiting for valid proof after local rejection: total=%llu streak=%u/%u valid=%llu/%u",
                  (unsigned long long) observed.locally_rejected_results,

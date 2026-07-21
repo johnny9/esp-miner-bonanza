@@ -118,6 +118,31 @@ TEST_CASE("BZM Stage-7 evidence accepts one transient rejection with valid proof
     TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_FAULT_NONE, result.fault);
 }
 
+TEST_CASE("BZM Stage-7 proof tolerates a sub-threshold local rejection streak",
+          "[asic][bzm][running][evidence]")
+{
+    bzm_running_evidence_config_t bounded = CONFIG;
+    bounded.maximum_local_rejections = 16;
+    bzm_running_stats_t baseline = {0};
+    bzm_running_stats_t current = {
+        .dispatch_batches = 4,
+        .dispatched_logical_engines = 944,
+        .dispatched_chip_engines = 3776,
+        .mapped_results = 875,
+        .locally_valid_results = 866,
+        .locally_rejected_results = 9,
+        .local_rejection_streak = 1,
+        .local_recovery_pending = true,
+    };
+
+    bzm_running_evidence_result_t result =
+        bzm_running_evidence_evaluate(&baseline, &current, &bounded,
+                                      bounded.proof_timeout_ms);
+    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_GOOD, result.status);
+    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_FAULT_NONE, result.fault);
+    TEST_ASSERT_NOT_NULL(strstr(result.detail, "localRejected=9"));
+}
+
 TEST_CASE("BZM Stage-7 mapping recovery requires valid proof after the last rejection",
           "[asic][bzm][running][evidence]")
 {
@@ -254,6 +279,12 @@ TEST_CASE("BZM Stage-7 evidence rejects rollback and invalid configuration",
     invalid = CONFIG;
     invalid.allow_mapping_recovery = true;
     invalid.maximum_mapping_rejections = 0;
+    result = bzm_running_evidence_evaluate(&current, &current, &invalid, 0);
+    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_BAD, result.status);
+    TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_FAULT_INVALID_CONFIGURATION, result.fault);
+
+    invalid = CONFIG;
+    invalid.maximum_local_rejections = 0;
     result = bzm_running_evidence_evaluate(&current, &current, &invalid, 0);
     TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_BAD, result.status);
     TEST_ASSERT_EQUAL(BZM_RUNNING_EVIDENCE_FAULT_INVALID_CONFIGURATION, result.fault);

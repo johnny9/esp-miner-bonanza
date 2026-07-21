@@ -80,12 +80,12 @@ void bzm_running_evidence_lifecycle_init(bzm_running_evidence_lifecycle_t * life
 /* Establish Stage 7 once a complete dispatch and real locally verified nonce
  * arrive inside the initial timeout, even if bounded recovery is pending at
  * that sampling instant. That recovery and each later one gets a fresh
- * timeout. New locally verified proof demonstrates that any prior result
- * recovery completed; if another bounded rejection is already pending at the
- * next sample, its shorter recovery timeout starts fresh. Raw rejection
- * streaks remain diagnostic because the unchecksummed ASIC stream can produce
- * bursts of nonce-like corruption; dispatch and counter faults remain
- * immediately BAD. */
+ * timeout. Isolated local validation failures remain diagnostic; a timed
+ * recovery begins only when their consecutive streak reaches the configured
+ * bound. New locally verified proof demonstrates that any active result
+ * recovery completed. Mapping loss remains immediately recovery-gated because
+ * it means attribution itself was unavailable; dispatch and counter faults
+ * remain immediately BAD. */
 bzm_running_evidence_result_t bzm_running_evidence_track(
     bzm_running_evidence_lifecycle_t * lifecycle,
     const bzm_running_stats_t * baseline,

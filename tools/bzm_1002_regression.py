@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import functools
 import gzip
 import hashlib
 import http.client
@@ -17,6 +16,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -40,27 +40,22 @@ REQUIRED_UI_LABELS = (
 )
 
 
-REQUEST_OPENER = urllib.request.build_opener()
+REQUEST_SOURCE_ADDRESS: tuple[str, int] | None = None
+REQUEST_CONNECTION: http.client.HTTPConnection | None = None
+REQUEST_CONNECTION_TARGET: tuple[str, int] | None = None
 
 
-class SourceAddressHTTPHandler(urllib.request.HTTPHandler):
-    """Bind device HTTP connections to a selected local IPv4 address."""
-
-    def __init__(self, source_address: str) -> None:
-        super().__init__()
-        self._source_address = (source_address, 0)
-
-    def http_open(self, request: urllib.request.Request) -> Any:
-        connection = functools.partial(
-            http.client.HTTPConnection,
-            source_address=self._source_address,
-        )
-        return self.do_open(connection, request)
+def close_request_connection() -> None:
+    global REQUEST_CONNECTION, REQUEST_CONNECTION_TARGET
+    if REQUEST_CONNECTION is not None:
+        REQUEST_CONNECTION.close()
+    REQUEST_CONNECTION = None
+    REQUEST_CONNECTION_TARGET = None
 
 
 def bind_request_interface(interface: str) -> str:
     """Bind subsequent HTTP requests to the IPv4 address on interface."""
-    global REQUEST_OPENER
+    global REQUEST_SOURCE_ADDRESS
     encoded = interface.encode("utf-8")
     if not encoded or len(encoded) > 15:
         raise ValueError(f"invalid network interface {interface!r}")
@@ -71,8 +66,8 @@ def bind_request_interface(interface: str) -> str:
             struct.pack("256s", encoded),
         )
     source_address = socket.inet_ntoa(result[20:24])
-    REQUEST_OPENER = urllib.request.build_opener(
-        SourceAddressHTTPHandler(source_address))
+    close_request_connection()
+    REQUEST_SOURCE_ADDRESS = (source_address, 0)
     return source_address
 
 
@@ -141,17 +136,60 @@ def record_artifact(report: Report, name: str, path: Path) -> None:
 
 def request_bytes(base_url: str, path: str, *, data: bytes | None = None,
                   timeout: float = 10.0) -> tuple[bytes, Any]:
+    headers = {
+        "Accept": "application/json,text/html,*/*",
+        "Accept-Encoding": "identity",
+        "Content-Type": "application/octet-stream",
+    }
+    if REQUEST_SOURCE_ADDRESS is not None:
+        global REQUEST_CONNECTION, REQUEST_CONNECTION_TARGET
+        parsed = urllib.parse.urlsplit(base_url + path)
+        if parsed.scheme != "http" or parsed.hostname is None:
+            raise ValueError("bound device requests require an HTTP URL")
+        target = (parsed.hostname, parsed.port or 80)
+        if REQUEST_CONNECTION is None or REQUEST_CONNECTION_TARGET != target:
+            close_request_connection()
+            REQUEST_CONNECTION = http.client.HTTPConnection(
+                target[0], target[1], timeout=timeout,
+                source_address=REQUEST_SOURCE_ADDRESS)
+            REQUEST_CONNECTION_TARGET = target
+        else:
+            REQUEST_CONNECTION.timeout = timeout
+            if REQUEST_CONNECTION.sock is not None:
+                REQUEST_CONNECTION.sock.settimeout(timeout)
+        request_path = urllib.parse.urlunsplit(
+            ("", "", parsed.path or "/", parsed.query, ""))
+        try:
+            REQUEST_CONNECTION.request(
+                "POST" if data is not None else "GET",
+                request_path,
+                body=data,
+                headers=headers,
+            )
+            response = REQUEST_CONNECTION.getresponse()
+            body = response.read()
+            response_headers = response.headers
+            status = response.status
+            reason = response.reason
+            if response.will_close:
+                close_request_connection()
+        except (OSError, http.client.HTTPException):
+            close_request_connection()
+            raise
+        if status >= 400:
+            raise urllib.error.HTTPError(
+                base_url + path, status, reason, response_headers, None)
+        if response_headers.get("Content-Encoding") == "gzip" or body[:2] == b"\x1f\x8b":
+            body = gzip.decompress(body)
+        return body, response_headers
+
     request = urllib.request.Request(
         base_url + path,
         data=data,
         method="POST" if data is not None else "GET",
-        headers={
-            "Accept": "application/json,text/html,*/*",
-            "Accept-Encoding": "identity",
-            "Content-Type": "application/octet-stream",
-        },
+        headers=headers,
     )
-    with REQUEST_OPENER.open(request, timeout=timeout) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         body = response.read()
         if response.headers.get("Content-Encoding") == "gzip" or body[:2] == b"\x1f\x8b":
             body = gzip.decompress(body)
@@ -465,6 +503,7 @@ def main() -> int:
     args.report.write_text(json.dumps(report.as_dict(), indent=2, sort_keys=True) + "\n")
     if args.junit:
         write_junit(report, args.junit)
+    close_request_connection()
     print(f"Report: {args.report.resolve()}")
     return 0 if all(item.passed for item in report.checks) else 1
 

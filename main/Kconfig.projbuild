@@ -55,12 +55,15 @@ menu "Bitaxe Configuration"
         config BZM_1002_MIN_NONCE_DIFFICULTY
             int "Minimum locally verified nonce difficulty"
             range 1 1024
-            default 1
+            default 16
             help
                 Minimum locally calculated difficulty for each result counted
                 as mining-health evidence. A mapped result below this floor is a
                 local validation rejection, because the ASIC result filter is
-                configured to suppress it before transmission.
+                configured to suppress it before transmission. The production
+                default therefore matches the 36-bit ASIC filter at
+                difficulty 16 instead of treating arbitrary difficulty-one
+                reconstructions as useful-hashrate evidence.
 
         config BZM_1002_LEAD_ZEROS
             int "ASIC result-filter leading-zero bits"

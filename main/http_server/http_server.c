@@ -1444,7 +1444,13 @@ esp_err_t POST_OTA_update(httpd_req_t * req)
 
     const esp_partition_t * ota_partition = esp_ota_get_next_update_partition(NULL);
     if (ota_partition == NULL ||
-        esp_ota_begin(ota_partition, OTA_SIZE_UNKNOWN, &ota_handle) !=
+        req->content_len <= 0 ||
+        req->content_len > ota_partition->size ||
+        /* Erase only the incoming image span. OTA_SIZE_UNKNOWN erases the
+         * entire 4 MiB slot synchronously before the handler can drain the
+         * request socket, which can exhaust the TCP receive window and make
+         * a healthy upload fail at a repeatable early byte count. */
+        esp_ota_begin(ota_partition, req->content_len, &ota_handle) !=
             ESP_OK) {
         GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = false;
         return bzm_ota_error_after_release(

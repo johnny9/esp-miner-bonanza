@@ -62,11 +62,10 @@ esp_err_t SERIAL_init(void)
         return err;
     }
 
-    /* The ESP32-S3 UART FIFO is only 128 bytes. At 5 Mbaud the driver's
-     * near-full default threshold leaves only microseconds for its ISR,
-     * which is not enough while the command path briefly masks interrupts.
-     * Trigger at 32 bytes so the remaining 96 bytes absorb bounded latency
-     * before the 32 KiB software ring takes ownership. */
+    /* The ESP32-S3 UART FIFO is only 128 bytes. Keep the early threshold even
+     * at the signal-qualified 2 Mbaud bridge rate, so the remaining 96 bytes
+     * absorb bounded interrupt latency before the 32 KiB software ring takes
+     * ownership. */
     err = uart_set_rx_full_threshold(UART_NUM_1,
                                      SERIAL_RX_FIFO_FULL_THRESHOLD);
     if (err != ESP_OK) {

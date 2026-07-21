@@ -82,7 +82,7 @@ menu "Bitaxe Configuration"
             help
                 After each logical engine has been programmed on all four
                 ASICs, wait for ESP UART TX completion, leave this bounded
-                idle interval on the 5 Mbaud link, and drain received TDM
+                idle interval on the 2 Mbaud protected bridge link, and drain received TDM
                 traffic. Zero disables the idle interval but retains the TX
                 completion and RX-drain checkpoint. Any checkpoint failure or
                 parser corruption outside the separately configured bounded

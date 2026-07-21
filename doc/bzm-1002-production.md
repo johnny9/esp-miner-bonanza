@@ -21,6 +21,10 @@ uses the full 32-bit nonce domain. Only the four ASIC instances of that one
 logical engine divide the nonce range. Per-engine current and previous
 generations remain attributable through enhanced-mode sequence identifiers.
 The timestamp budget is 60, matching the BIRDS production scheduling model.
+The ASIC-facing PIO link remains at the qualified 5 Mbaud rate. The separate
+CRC-protected ESP-to-bridge UART runs at 2 Mbaud, more than four times its
+480 kbit/s measured worst-case encoded payload budget, to provide board-level
+signal margin without reducing ASIC work coverage.
 
 ## Safety and recovery
 
@@ -51,7 +55,7 @@ absent from production firmware.
 
 | ESP-Miner Bonanza controller | Required bridge protocol | Result |
 | --- | --- | --- |
-| Production MVO | major 1, minor 1 or newer compatible minor | Mining allowed |
+| Production MVO | major 1, minor 2 or newer compatible minor | Mining allowed with the CRC/sequence data-link envelope |
 | Production MVO | protocol missing, major mismatch, lease/trip policy missing, or required control path missing | Safe-off with an incompatible-bridge fault |
 
 Before VCORE can be energized, the bridge must report the fixed trip-latch

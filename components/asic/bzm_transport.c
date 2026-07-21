@@ -707,7 +707,10 @@ size_t bzm_serial_discover_chain(bzm_serial_transport_t * transport, size_t expe
     return transport->asic_count;
 }
 
-bool bzm_transport_program_work(const bzm_work_t * work, bzm_register_writer_t writer, void * writer_context)
+static bool program_work(const bzm_work_t *work,
+                         bzm_register_writer_t writer,
+                         void *writer_context,
+                         bool include_nonce_range)
 {
     if (work == NULL || writer == NULL || work->midstate_count == 0 || work->midstate_count > BZM_VERSION_VARIANTS) {
         return false;
@@ -730,8 +733,9 @@ bool bzm_transport_program_work(const bzm_work_t * work, bzm_register_writer_t w
     uint32_t wire_target = __builtin_bswap32(work->target);
     if (!writer(writer_context, work->engine_id, BZM_REG_ZEROS_TO_FIND, &zero_count, 1) ||
         !writer(writer_context, work->engine_id, BZM_REG_TIMESTAMP_COUNT, &timestamp_control, 1) ||
-        !writer(writer_context, work->engine_id, BZM_REG_START_NONCE, &work->starting_nonce, 4) ||
-        !writer(writer_context, work->engine_id, BZM_REG_END_NONCE, &work->end_nonce, 4) ||
+        (include_nonce_range &&
+         (!writer(writer_context, work->engine_id, BZM_REG_START_NONCE, &work->starting_nonce, 4) ||
+          !writer(writer_context, work->engine_id, BZM_REG_END_NONCE, &work->end_nonce, 4))) ||
         !writer(writer_context, work->engine_id, BZM_REG_MERKLE_RESIDUE, &wire_merkle_residue, 4) ||
         !writer(writer_context, work->engine_id, BZM_REG_START_TIMESTAMP, &wire_start_ntime, 4) ||
         !writer(writer_context, work->engine_id, BZM_REG_TARGET, &wire_target, 4)) {
@@ -754,6 +758,20 @@ bool bzm_transport_program_work(const bzm_work_t * work, bzm_register_writer_t w
 
     uint8_t job_control = 3;
     return writer(writer_context, work->engine_id, BZM_REG_JOB_CONTROL, &job_control, 1);
+}
+
+bool bzm_transport_program_work(const bzm_work_t *work,
+                                bzm_register_writer_t writer,
+                                void *writer_context)
+{
+    return program_work(work, writer, writer_context, true);
+}
+
+bool bzm_transport_program_broadcast_work(const bzm_work_t *work,
+                                          bzm_register_writer_t writer,
+                                          void *writer_context)
+{
+    return program_work(work, writer, writer_context, false);
 }
 
 static bool program_flush_job(uint16_t engine, bool enhanced_mode, uint8_t job_control, bzm_register_writer_t writer,
@@ -851,14 +869,23 @@ bool bzm_serial_write_work(void * context, const bzm_work_t * work)
                                        &chip_work.end_nonce)) {
             return false;
         }
-        serial_register_context_t writer = {
-            .asic_id = transport->asic_ids[i],
-        };
-        if (!bzm_transport_program_work(&chip_work, serial_register_writer, &writer)) {
+        if (!serial_write_register_raw(
+                transport->asic_ids[i], work->engine_id,
+                BZM_REG_START_NONCE, &chip_work.starting_nonce, 4) ||
+            !serial_write_register_raw(
+                transport->asic_ids[i], work->engine_id,
+                BZM_REG_END_NONCE, &chip_work.end_nonce, 4)) {
             return false;
         }
     }
-    return true;
+    /* BIRDS preloads the per-ASIC nonce quarters, then multicasts the common
+     * engine job. Keep the explicit range writes above, but send the large
+     * midstate payload only once to all four addressed ASICs. */
+    serial_register_context_t writer = {
+        .asic_id = BZM_ALL_ASICS,
+    };
+    return bzm_transport_program_broadcast_work(
+        work, serial_register_writer, &writer);
 }
 
 bool bzm_serial_flush(void * context)
@@ -867,13 +894,13 @@ bool bzm_serial_flush(void * context)
     if (transport == NULL)
         return false;
 
-    bool success = transport->asic_count != 0;
-    for (size_t i = 0; success && i < transport->asic_count; ++i) {
-        serial_register_context_t writer = {
-            .asic_id = transport->asic_ids[i],
-        };
-        success = bzm_transport_program_flush(transport->engine_count, transport->enhanced_mode, serial_register_writer, &writer);
-    }
+    serial_register_context_t writer = {
+        .asic_id = BZM_ALL_ASICS,
+    };
+    bool success = transport->asic_count != 0 &&
+        bzm_transport_program_flush(
+            transport->engine_count, transport->enhanced_mode,
+            serial_register_writer, &writer);
     SERIAL_clear_buffer();
     if (transport->io.initialized)
         reset_io_state(transport, false, false);

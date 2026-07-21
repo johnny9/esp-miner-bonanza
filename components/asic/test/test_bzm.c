@@ -542,6 +542,17 @@ TEST_CASE("BZM transport programs ordered enhanced work and flush jobs",
     TEST_ASSERT_EQUAL_HEX8(0x39, capture.writes[15].offset);
     TEST_ASSERT_EQUAL_UINT8(3, capture.writes[15].data[0]);
 
+    capture = (register_capture_t){0};
+    TEST_ASSERT_TRUE(bzm_transport_program_broadcast_work(
+        &work, capture_register, &capture));
+    TEST_ASSERT_EQUAL_UINT32(14, capture.count);
+    for (size_t i = 0; i < capture.count; ++i) {
+        TEST_ASSERT_NOT_EQUAL_HEX8(0x3c, capture.writes[i].offset);
+        TEST_ASSERT_NOT_EQUAL_HEX8(0x40, capture.writes[i].offset);
+    }
+    TEST_ASSERT_EQUAL_HEX8(0x30, capture.writes[2].offset);
+    TEST_ASSERT_EQUAL_HEX8(0x39, capture.writes[13].offset);
+
     TEST_ASSERT_TRUE(bzm_result_queue_capacity_covers(
         BZM_PENDING_RESULT_COUNT,
         BZM_RESULT_DESIGN_RATE_PER_SECOND,

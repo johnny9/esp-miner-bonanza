@@ -150,6 +150,11 @@ bool bzm_serial_write_register_to(bzm_serial_transport_t * transport, uint8_t as
 bool bzm_serial_read_register(bzm_serial_transport_t * transport, uint8_t asic_id, uint16_t engine_id, uint8_t offset, void * data,
                               size_t data_len);
 bool bzm_transport_program_work(const bzm_work_t * work, bzm_register_writer_t writer, void * writer_context);
+/* Program common job fields for an all-ASIC multicast after each ASIC's
+ * persistent nonce quarter has been written separately. */
+bool bzm_transport_program_broadcast_work(
+    const bzm_work_t *work, bzm_register_writer_t writer,
+    void *writer_context);
 /* Queue a deterministic, 64-leading-zero sentinel as both current and
  * pending work. It exercises the hashing datapath without opening ordinary
  * mining dispatch. */

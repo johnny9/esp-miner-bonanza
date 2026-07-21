@@ -713,13 +713,12 @@ bool bzm_transport_program_work(const bzm_work_t * work, bzm_register_writer_t w
         return false;
     }
 
-    /* ZEROS_TO_FIND is an inclusive count after the fixed 31-bit prefix:
-     * register value 4 emits hashes with 35 leading zeroes (difficulty 8),
-     * as confirmed by the device result cadence against accepted pool shares.
-     * Program 5 for the requested 36-bit/difficulty-16 filter. The register's
-     * maximum value remains sufficient for the no-result Stage-6 sentinel. */
-    uint8_t zero_count = work->lead_zeros > 31
-        ? (uint8_t)(work->lead_zeros - 31)
+    /* Match the production BIRDS encoding exactly: ZEROS_TO_FIND stores the
+     * requested leading-zero count after the fixed 32-bit difficulty-one
+     * prefix. This must stay aligned with BZM_record_local_result(), which
+     * credits each result as 2^(lead_zeros - 32) difficulty-one units. */
+    uint8_t zero_count = work->lead_zeros > 32
+        ? (uint8_t)(work->lead_zeros - 32)
         : 0;
     if (zero_count > 32) zero_count = 32;
     uint8_t timestamp_control = work->timestamp_count | BZM_TIMESTAMP_AUTO_CLOCK_UNGATE;

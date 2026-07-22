@@ -20,6 +20,7 @@ import { SatsPipe } from 'src/app/pipes/sats.pipe';
 import { ByteSuffixPipe } from 'src/app/pipes/byte-suffix.pipe';
 
 import { TooltipTextIconComponent } from 'src/app/components/tooltip-text-icon/tooltip-text-icon.component';
+import { TooltipIconComponent } from 'src/app/components/tooltip-icon/tooltip-icon.component';
 import { ConfettiComponent } from 'src/app/components/confetti/confetti.component';
 import { SnowflakesComponent } from 'src/app/components/snowflakes/snowflakes.component';
 
@@ -43,6 +44,7 @@ describe('HomeComponent', () => {
       declarations: [
         HomeComponent,
         TooltipTextIconComponent,
+        TooltipIconComponent,
         ConfettiComponent,
         SnowflakesComponent
       ],

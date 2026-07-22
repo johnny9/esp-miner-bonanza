@@ -696,11 +696,11 @@ esp_netif_t * wifi_init_sta(const char * wifi_ssid, const char * wifi_pass)
         .sta =
             {
                 .threshold.authmode = authmode,
-                /* The configured SSID may be a multi-AP mesh. Preserve the
-                 * upstream 802.11k/v assistance so the AP can transition this
-                 * stationary client without tearing down every active socket. */
-                .btm_enabled = 1,
-                .rm_enabled = 1,
+                /* Bitaxe is stationary and does not benefit from neighbor
+                 * reports or BSS transition management. Keep roaming helpers
+                 * disabled and use the explicit bounded reconnect policy. */
+                .btm_enabled = 0,
+                .rm_enabled = 0,
                 .scan_method = WIFI_ALL_CHANNEL_SCAN,
                 .sort_method = WIFI_CONNECT_AP_BY_SIGNAL,
                 .pmf_cfg =

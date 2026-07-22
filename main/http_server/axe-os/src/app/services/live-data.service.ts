@@ -5,6 +5,7 @@ import { webSocket, WebSocketSubject } from 'rxjs/webSocket';
 import { SystemInfo as ISystemInfo } from 'src/app/generated/models';
 import { SystemApiService } from './system.service';
 import { environment } from 'src/environments/environment';
+import { mergeLiveDataUpdate } from './live-data-merge';
 
 @Injectable({
   providedIn: 'root'
@@ -52,7 +53,10 @@ export class LiveDataService {
         // Buffer updates to handle bursts when tab is resumed
         bufferTime(500),
         filter(msgs => msgs.length > 0),
-        map(msgs => msgs.reduce((acc, curr) => ({ ...acc, ...curr }), {} as Partial<ISystemInfo>))
+        map(msgs => msgs.reduce(
+          (acc, curr) => mergeLiveDataUpdate(acc, curr),
+          {} as Partial<ISystemInfo>
+        ))
       ),
       fallbackPolling$
     );
@@ -65,7 +69,11 @@ export class LiveDataService {
     );
 
     this.info$ = merge(initialInfo$, updates$).pipe(
-      scan((acc: ISystemInfo, curr: Partial<ISystemInfo>) => ({ ...acc, ...curr } as ISystemInfo), {} as ISystemInfo),
+      scan(
+        (acc: ISystemInfo, curr: Partial<ISystemInfo>) =>
+          mergeLiveDataUpdate(acc, curr),
+        {} as ISystemInfo
+      ),
       // Ensure we have at least once received a message with a recognizable field before emitting
       filter(info => !!info.version || !!info.uptimeSeconds),
       shareReplay(1)

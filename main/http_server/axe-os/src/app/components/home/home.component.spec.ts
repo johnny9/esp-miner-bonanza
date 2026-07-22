@@ -129,6 +129,7 @@ describe('HomeComponent', () => {
       sharesRejected: 1,
       hashRate: 710,
       hashRate_1m: 700,
+      fanspeed: 100,
       asicHealth: {
         lifecycle: 'MINING',
         stateAgeSeconds: 125,

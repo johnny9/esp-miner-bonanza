@@ -185,7 +185,7 @@ describe('HomeComponent', () => {
     expect(text).toContain('944 / 944 engines');
     expect(text).toContain('800 MHz at 2800 mV fixed');
     expect(text).toContain('2.800 V measured');
-    expect(text).toContain('protocol 1.1');
+    expect(text).toContain('protocol 1.2');
     expect(text).toContain('Mapped results: 240');
     expect(text).toContain('Locally valid: 220');
     expect(text).not.toContain('validation stage');

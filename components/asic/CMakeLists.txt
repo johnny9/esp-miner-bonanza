@@ -31,6 +31,8 @@ SRCS
     "bzm_reactor.c"
     "bzm_transport.c"
     "bzm_bridge.c"
+    "bzm_bridge_swd.c"
+    "bzm_bridge_update.c"
     "bzm_power.c"
     "bzm_tps546_verify.c"
     "bzm_driver.c"

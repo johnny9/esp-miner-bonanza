@@ -31,8 +31,9 @@ signal margin without reducing ASIC work coverage.
 The RP2040 bridge owns an independent short output lease. ESP-Miner services
 that lease during startup, work programming, and continuous monitoring. A
 persistent bridge, fan, TPS, telemetry, PLL, parser, attribution, or dispatch
-fault closes work dispatch and proves safe-off. OTA and restart acquire the
-same verified-safe maintenance boundary before proceeding.
+fault closes work dispatch and proves safe-off. ESP/AxeOS OTA, bridge firmware
+updates, and restart acquire the same verified-safe maintenance boundary before
+proceeding.
 
 Parser byte realignment and result-attribution recovery are bounded production
 behaviors. Their byte, event, rejection, and timeout thresholds are the only
@@ -47,9 +48,11 @@ average hashrate, four-ASIC and 944-engine status, the locked clock and voltage,
 measured VOUT, temperature and fan telemetry, bridge compatibility, recovery
 counters, and the last persistent fault with a safe next action.
 
-Qualification snapshots, raw templates, midstates, per-engine traces, manual
-startup controls, and the experimental bridge SWD updater are intentionally
-absent from production firmware.
+Qualification snapshots, raw templates, midstates, per-engine traces, and
+manual startup controls are intentionally absent from production firmware.
+The production bridge updater accepts a separately supplied raw RP2040 image,
+programs and read-back verifies it over the onboard SWD connection, resets the
+bridge, and confirms its reported version before completing.
 
 ## Bridge compatibility
 

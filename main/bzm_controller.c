@@ -8,6 +8,7 @@
 
 #include "TPS546.h"
 #include "asic_result_task.h"
+#include "bzm_bridge_update.h"
 #include "bzm_driver.h"
 #include "bzm_lease_guard.h"
 #include "bzm_power.h"
@@ -163,6 +164,20 @@ static bool runtime_restart_guard(void * context)
 {
     (void) context;
     return bzm_controller_prepare_restart();
+}
+
+static bool bridge_update_acquire(void * context)
+{
+    (void) context;
+    return bzm_controller_acquire_maintenance(
+        BZM_SUPERVISOR_OWNER_BRIDGE_UPDATE);
+}
+
+static bool bridge_update_release(void * context)
+{
+    (void) context;
+    return bzm_controller_release_maintenance(
+        BZM_SUPERVISOR_OWNER_BRIDGE_UPDATE);
 }
 
 static uint64_t now_ms(void)
@@ -1162,6 +1177,12 @@ esp_err_t bzm_controller_init(GlobalState * global_state)
         return ESP_ERR_INVALID_STATE;
     }
     RUNTIME.initialized = true;
+    if (!BZM_bridge_update_set_maintenance_hooks(
+            bridge_update_acquire, bridge_update_release, NULL)) {
+        RUNTIME.initialized = false;
+        pthread_mutex_unlock(&RUNTIME.lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     STRATUM_V1_set_restart_guard(runtime_restart_guard, NULL);
     refresh_bridge_evidence_locked();
     bool safe = bzm_supervisor_request_validation(&RUNTIME.supervisor, BZM_STAGE_OFF_SAFE, false, false, 0, now_ms());

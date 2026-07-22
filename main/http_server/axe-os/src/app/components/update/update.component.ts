@@ -1,5 +1,8 @@
 import { Component, OnDestroy, ViewChild } from '@angular/core';
-import { Observable, map } from 'rxjs';
+import {
+  Observable, Subscription, catchError, map, of, shareReplay,
+  switchMap, takeWhile, timer
+} from 'rxjs';
 import { HttpErrorResponse, HttpEventType } from '@angular/common/http';
 import { ToastrService } from 'ngx-toastr';
 import { FileUploadHandlerEvent, FileUpload } from 'primeng/fileupload';
@@ -9,7 +12,9 @@ import { SystemApiService } from 'src/app/services/system.service';
 import { LiveDataService } from 'src/app/services/live-data.service';
 import { LocalStorageService } from 'src/app/local-storage.service';
 import { ModalComponent } from '../modal/modal.component';
-import { SystemInfo } from 'src/app/generated/models';
+import {
+  BridgeInfo, BridgeUpdateStatus, SystemInfo
+} from 'src/app/generated/models';
 
 const IGNORE_RELEASE_CHECK_WARNING = 'IGNORE_RELEASE_CHECK_WARNING';
 
@@ -23,14 +28,18 @@ export class UpdateComponent implements OnDestroy {
 
   public firmwareUpdateProgress: number = 0;
   public websiteUpdateProgress: number = 0;
+  public bridgeUpdateProgress: number = 0;
+  public bridgeUpdatePhase: string = '';
 
   public checkLatestRelease: boolean = false;
   public latestRelease$: Observable<any>;
 
   public info$: Observable<SystemInfo>;
+  public bridgeInfo$: Observable<BridgeInfo | null>;
 
   @ViewChild('firmwareUpload') firmwareUpload!: FileUpload;
   @ViewChild('websiteUpload') websiteUpload!: FileUpload;
+  @ViewChild('bridgeUpload') bridgeUpload?: FileUpload;
 
   @ViewChild('privacyModal') privacyModal?: ModalComponent;
   @ViewChild('progressModal') progressModal?: ModalComponent;
@@ -38,6 +47,7 @@ export class UpdateComponent implements OnDestroy {
   public updateTarget: string = '';
   public updateStatus: 'progress' | 'success' | 'error' = 'progress';
   public updateMessage: string = '';
+  private bridgePollSubscription?: Subscription;
 
   constructor(
     private systemService: SystemApiService,
@@ -52,13 +62,27 @@ export class UpdateComponent implements OnDestroy {
     }));
 
     this.info$ = this.liveDataService.info$;
+    this.bridgeInfo$ = this.info$.pipe(
+      switchMap(info => info.ASICModel === 'BZM'
+        ? this.systemService.getBridgeInfo().pipe(catchError(() => of({
+            available: false,
+            versionQuerySupported: false,
+            version: null,
+            protocolMajor: null,
+            protocolMinor: null,
+          })))
+        : of(null)),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    );
   }
 
   ngOnDestroy(): void {
+    this.bridgePollSubscription?.unsubscribe();
   }
 
   public get modalProgress(): number {
     if (this.updateTarget === 'AxeOS') return this.websiteUpdateProgress;
+    if (this.updateTarget === 'Bridge') return this.bridgeUpdateProgress;
     return this.firmwareUpdateProgress;
   }
 
@@ -156,6 +180,81 @@ export class UpdateComponent implements OnDestroy {
           this.websiteUpdateProgress = 0;
         }
       });
+  }
+
+  bridgeUpdate(event: FileUploadHandlerEvent) {
+    const file = event.files[0];
+    this.bridgeUpload?.clear();
+
+    if (!file.name.toLowerCase().endsWith('.bin')) {
+      this.toastrService.error(
+        'Incorrect file, select a raw RP2040 .bin image.');
+      return;
+    }
+
+    this.updateTarget = 'Bridge';
+    this.updateStatus = 'progress';
+    this.updateMessage = '';
+    this.bridgeUpdateProgress = 0;
+    this.bridgeUpdatePhase = 'uploading';
+    if (this.progressModal) this.progressModal.isVisible = true;
+
+    this.systemService.performBridgeUpdate(file).subscribe({
+      next: event => {
+        if (event.type === HttpEventType.UploadProgress) {
+          this.bridgeUpdateProgress = event.total
+            ? Math.round(event.loaded * 100 / event.total)
+            : 0;
+        } else if (event.type === HttpEventType.Response) {
+          this.applyBridgeStatus(event.body);
+          this.pollBridgeUpdate();
+        }
+      },
+      error: err => {
+        this.updateStatus = 'error';
+        this.updateMessage = err.error?.message || err.error ||
+          err.message || 'Bridge firmware upload failed';
+      },
+    });
+  }
+
+  private pollBridgeUpdate(): void {
+    this.bridgePollSubscription?.unsubscribe();
+    this.bridgePollSubscription = timer(0, 750).pipe(
+      switchMap(() => this.systemService.getBridgeFirmwareUpdateStatus()),
+      takeWhile(status => status.running, true),
+    ).subscribe({
+      next: status => this.applyBridgeStatus(status),
+      error: err => {
+        this.updateStatus = 'error';
+        this.updateMessage = err.error?.message || err.error ||
+          err.message || 'Unable to read bridge update status';
+      },
+    });
+  }
+
+  private applyBridgeStatus(status: BridgeUpdateStatus | null): void {
+    if (!status) return;
+    this.bridgeUpdatePhase = status.state;
+    this.bridgeUpdateProgress = status.progress;
+    if (status.state === 'complete') {
+      this.updateStatus = 'success';
+      this.updateMessage = status.currentVersion
+        ? `Bridge firmware updated to ${status.currentVersion}. Restart ESP-Miner before mining.`
+        : 'Bridge firmware updated successfully. Restart ESP-Miner before mining.';
+      this.bridgeInfo$ = this.systemService.getBridgeInfo().pipe(
+        catchError(() => of({
+          available: true,
+          versionQuerySupported: false,
+          version: null,
+          protocolMajor: null,
+          protocolMinor: null,
+        })),
+      );
+    } else if (status.state === 'failed') {
+      this.updateStatus = 'error';
+      this.updateMessage = status.error || 'Bridge firmware update failed';
+    }
   }
 
   // https://gist.github.com/elfefe/ef08e583e276e7617cd316ba2382fc40

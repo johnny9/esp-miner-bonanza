@@ -10,7 +10,9 @@ import {
   SystemAsic as ISystemASIC,
   SystemScoreboardEntry as ISystemScoreboardEntry,
   Settings,
-  GenericResponse
+  GenericResponse,
+  BridgeInfo,
+  BridgeUpdateStatus
 } from '../generated/models';
 import { Api } from '../generated/api';
 import * as functions from '../generated/functions';
@@ -428,6 +430,55 @@ export class SystemApiService {
 
   public performWWWOTAUpdate(file: File | Blob): Observable<HttpEvent<string>> {
     return this.otaUpdate(file, '/api/system/OTAWWW');
+  }
+
+  public getBridgeInfo(): Observable<BridgeInfo> {
+    if (!environment.mock && this.api) {
+      return from(this.api.invoke(functions.getBridgeInfo, {}));
+    }
+    if (!environment.mock) {
+      return this.httpClient.get<BridgeInfo>('/api/system/bridge');
+    }
+    return of({
+      available: true,
+      versionQuerySupported: true,
+      version: '0.0.1+gabcdef',
+      protocolMajor: 1,
+      protocolMinor: 2,
+    });
+  }
+
+  public performBridgeUpdate(
+    file: File | Blob
+  ): Observable<HttpEvent<BridgeUpdateStatus>> {
+    return this.httpClient.post<BridgeUpdateStatus>(
+      '/api/system/bridge/firmware', file, {
+        reportProgress: true,
+        observe: 'events',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+        },
+      });
+  }
+
+  public getBridgeFirmwareUpdateStatus(): Observable<BridgeUpdateStatus> {
+    if (!environment.mock && this.api) {
+      return from(this.api.invoke(
+        functions.getBridgeFirmwareUpdateStatus, {}));
+    }
+    if (!environment.mock) {
+      return this.httpClient.get<BridgeUpdateStatus>(
+        '/api/system/bridge/firmware/status');
+    }
+    return of({
+      state: 'complete',
+      progress: 100,
+      imageSize: 65536,
+      running: false,
+      versionQuerySupported: true,
+      currentVersion: '0.0.1+gabcdef',
+      error: null,
+    });
   }
 
   public getAsicSettings(uri: string = ''): Observable<ISystemASIC> {

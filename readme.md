@@ -4,49 +4,50 @@ ESP-Miner-Bonanza is open-source ESP32-S3 firmware and an AxeOS web interface fo
 
 This is a Bonanza-specific fork of [ESP-Miner](https://github.com/bitaxeorg/ESP-Miner). It adds the BZM2 driver, RP2040 bridge protocol, fixed-profile startup, runtime safety supervision, and Bonanza health telemetry needed by the 1002x design. The four BZM2 ASICs run at the fixed production profile of 800 MHz with a 2.8 V board rail; frequency and voltage tuning are intentionally disabled.
 
-The 1002x hardware is still described as a prototype by its hardware repository. Treat both the hardware and this firmware as active development work, and use the matching Bonanza ESP32 and RP2040 bridge firmware.
+The 1002x hardware is still described as a prototype by its hardware repository. Treat both the hardware and this firmware as active development work, and use the matching Bonanza ESP32 firmware and [`bonanza-bridge-fw`](https://github.com/johnny9/bonanza-bridge-fw) RP2040 firmware.
 
 ## AxeOS feature support
 
-This table inventories the features exposed by the current AxeOS web UI. **Supported** means the feature is implemented for board 1002, **Partial** means only the listed Bonanza path works, and **Not supported** identifies an AxeOS control or data source that is not yet connected to the Bonanza runtime.
+This table inventories the features exposed by the current AxeOS web UI. 🟢 **Supported** means the feature is implemented for board 1002, 🟡 **Partial** means only the listed Bonanza path works, and 🔴 **Not supported** identifies an AxeOS control or data source that is not yet connected to the Bonanza runtime.
 
 | AxeOS area | Feature | Status | Bonanza support |
 | --- | --- | --- | --- |
-| Dashboard | Bonanza Miner Health | Supported | Shows lifecycle state, pool/work health, BZM2 and engine counts, fixed clock and rail settings, measured rail voltage, board temperature, fan speed/RPM, bridge firmware and protocol compatibility, faults, and transport/result diagnostics. |
-| Dashboard | Hashrate | Supported | Current, 1-minute, 10-minute, and 1-hour rates, error percentage, and four-ASIC/hash-domain detail are populated. |
-| Dashboard | Shares and difficulty | Supported | Accepted and rejected shares, rejection reasons, pool difficulty, best/session difficulty, and block probability are populated. |
-| Dashboard | Pool, block, and coinbase details | Supported | Shows active/fallback pool state, work age, response timing, block header data, version signals, and decoded coinbase outputs when supplied by the pool. |
-| Dashboard | Hashrate-register heatmap | Supported | Reports all four BZM2 ASICs and their active engines through the generic hashrate monitor. |
-| Dashboard | Block-found notification | Supported | The notification and dismiss action use the normal AxeOS path. |
-| Dashboard | Widget layout and sensitive-data hiding | Supported | Widget visibility/order and the privacy toggle are browser-side AxeOS features. |
-| Dashboard | Historical charts | Partial | Hashrate, Wi-Fi, and heap data are available. Generic power, temperature, voltage, and fan chart series are not yet populated from Bonanza telemetry. |
-| Dashboard | Power and efficiency cards | Not supported | The Bonanza controller does not currently publish generic input power/current or expected-hashrate telemetry. |
-| Dashboard | Legacy Heat and Fan cards | Partial | Accurate board temperature and fan readings are shown in Bonanza Miner Health, but the legacy cards still consume generic telemetry fields that are not wired to the Bonanza controller. |
-| Top bar | Pause and resume mining | Not supported | The API changes the AxeOS paused flag, but it does not yet stop or restart the Bonanza safety controller and BZM2 work dispatcher. |
-| Top bar | Restart | Supported | Restart and configuration restarts first move the Bonanza hardware to a verified safe-off state. |
-| Scoreboard | Highest-difficulty shares | Supported | The result pipeline records and displays the top shares and their job, nonce, time, extranonce, and version-bit details. |
-| Swarm | Discovery and device list | Supported | Subnet scan, manual add/remove, mDNS/IP access, refresh, filtering, sorting, grid/list views, and family identification support Bonanza devices. |
-| Swarm | Metrics and remote actions | Partial | Hashrate, shares, best difficulty, uptime, pool difficulty, version, remote settings, restart, and identify work. Generic power/temperature totals and pause/resume have the same limitations noted above. |
-| Logs | Live and downloaded logs | Supported | Real-time WebSocket logs, filtering, scroll pause/resume, clear, and download are available. |
-| System | Device and runtime information | Supported | Shows Bonanza model/board/ASIC identity, uptime/reset reason, network state, CPU/heap usage, and firmware, AxeOS, and ESP-IDF versions. Bridge details are shown in Bonanza Miner Health. |
-| System | Identify device | Supported | Triggers the normal on-device identify display. |
-| Pool | Stratum V1 | Supported | Primary/fallback pools, suggested difficulty, extranonce subscribe, no TLS/system CA/custom CA, and coinbase decoding are implemented. |
-| Pool | Stratum V2 | Supported | Primary/fallback pools, Standard and Extended Channels, optional authority key validation, encrypted transport, and Extended Channel coinbase decoding are implemented. |
-| Pool | Automatic fallback and recovery | Supported | The protocol coordinator switches pools after bounded failures, stops requesting work when all configured pools are unavailable, and probes for recovery. |
-| Network | Wi-Fi and hostname configuration | Supported | Wi-Fi scan, SSID/password changes, hostname changes, and restart are available. |
-| Network | Setup access point/captive setup | Supported | The AxeOS AP onboarding route is available when station setup is required. |
-| Network | mDNS and AxeOS discovery | Supported | Publishes HTTP and AxeOS DNS-SD records and supports `.local` access and Swarm discovery. |
-| Theme | Appearance | Supported | Dark, light, and white themes plus custom accent colors are available and persisted. |
-| Settings | ASIC frequency and voltage | Not supported | Board 1002 is deliberately locked to 800 MHz and a 2.8 V board rail; overclock mode does not expose tuning controls. |
-| Settings | Automatic/manual fan control | Not supported | Bonanza safety requires the bridge-controlled fan at 100%; target temperature, minimum fan, and manual fan controls are not applied. |
-| Settings | Overheat-mode reset | Not supported | Bonanza uses its dedicated fail-closed safety supervisor. A latched Bonanza fault requires inspection and restart rather than the generic overheat reset flow. |
-| Settings | Display configuration | Supported | Display type, rotation, color inversion, and display timeout use the normal AxeOS display path. |
-| Settings | Statistics/data logging | Partial | Logging and retention work, but generic power, temperature, voltage, and fan samples are not yet backed by Bonanza telemetry. |
-| Update | Manual ESP firmware OTA | Supported | Uploading `esp-miner.bin` is guarded by a verified Bonanza safe-off transition before flash and restart. |
-| Update | Manual AxeOS OTA | Supported | Uploading `www.bin`, progress reporting, and recovery mode are available. |
-| Update | Latest-release lookup/download | Not supported | AxeOS still queries the upstream ESP-Miner release feed, which is not Bonanza-aware and must not be used as a source of Bonanza firmware. |
-| Other | Bitcoin whitepaper | Supported | The bundled whitepaper link is a static AxeOS feature. |
-| API | REST and live WebSocket API | Partial | System, ASIC, statistics, scoreboard, logs, settings, restart, identify, and OTA paths are available. Pause/resume and generic Bonanza power/heat/fan telemetry retain the limitations above. |
+| Dashboard | Bonanza Miner Health | 🟢 Supported | Shows lifecycle state, pool/work health, BZM2 and engine counts, fixed clock and rail settings, measured rail voltage, board temperature, fan speed/RPM, bridge firmware and protocol compatibility, faults, and transport/result diagnostics. |
+| Dashboard | Hashrate | 🟢 Supported | Current, 1-minute, 10-minute, and 1-hour rates, error percentage, and four-ASIC/hash-domain detail are populated. |
+| Dashboard | Shares and difficulty | 🟢 Supported | Accepted and rejected shares, rejection reasons, pool difficulty, best/session difficulty, and block probability are populated. |
+| Dashboard | Pool, block, and coinbase details | 🟢 Supported | Shows active/fallback pool state, work age, response timing, block header data, version signals, and decoded coinbase outputs when supplied by the pool. |
+| Dashboard | Hashrate-register heatmap | 🟢 Supported | Reports all four BZM2 ASICs and their active engines through the generic hashrate monitor. |
+| Dashboard | Block-found notification | 🟢 Supported | The notification and dismiss action use the normal AxeOS path. |
+| Dashboard | Widget layout and sensitive-data hiding | 🟢 Supported | Widget visibility/order and the privacy toggle are browser-side AxeOS features. |
+| Dashboard | Historical charts | 🟡 Partial | Hashrate, Wi-Fi, and heap data are available. Generic power, temperature, voltage, and fan chart series are not yet populated from Bonanza telemetry. |
+| Dashboard | Power and efficiency cards | 🔴 Not supported | The Bonanza controller does not currently publish generic input power/current or expected-hashrate telemetry. |
+| Dashboard | Legacy Heat and Fan cards | 🟡 Partial | Accurate board temperature and fan readings are shown in Bonanza Miner Health, but the legacy cards still consume generic telemetry fields that are not wired to the Bonanza controller. |
+| Top bar | Pause and resume mining | 🔴 Not supported | The API changes the AxeOS paused flag, but it does not yet stop or restart the Bonanza safety controller and BZM2 work dispatcher. |
+| Top bar | Restart | 🟢 Supported | Restart and configuration restarts first move the Bonanza hardware to a verified safe-off state. |
+| Scoreboard | Highest-difficulty shares | 🟢 Supported | The result pipeline records and displays the top shares and their job, nonce, time, extranonce, and version-bit details. |
+| Swarm | Discovery and device list | 🟢 Supported | Subnet scan, manual add/remove, mDNS/IP access, refresh, filtering, sorting, grid/list views, and family identification support Bonanza devices. |
+| Swarm | Metrics and remote actions | 🟡 Partial | Hashrate, shares, best difficulty, uptime, pool difficulty, version, remote settings, restart, and identify work. Generic power/temperature totals and pause/resume have the same limitations noted above. |
+| Logs | Live and downloaded logs | 🟢 Supported | Real-time WebSocket logs, filtering, scroll pause/resume, clear, and download are available. |
+| System | Device and runtime information | 🟢 Supported | Shows Bonanza model/board/ASIC identity, uptime/reset reason, network state, CPU/heap usage, and firmware, AxeOS, and ESP-IDF versions. Bridge details are shown in Bonanza Miner Health. |
+| System | Identify device | 🟢 Supported | Triggers the normal on-device identify display. |
+| Pool | Stratum V1 | 🟢 Supported | Primary/fallback pools, suggested difficulty, extranonce subscribe, no TLS/system CA/custom CA, and coinbase decoding are implemented. |
+| Pool | Stratum V2 | 🟢 Supported | Primary/fallback pools, Standard and Extended Channels, optional authority key validation, encrypted transport, and Extended Channel coinbase decoding are implemented. |
+| Pool | Automatic fallback and recovery | 🟢 Supported | The protocol coordinator switches pools after bounded failures, stops requesting work when all configured pools are unavailable, and probes for recovery. |
+| Network | Wi-Fi and hostname configuration | 🟢 Supported | Wi-Fi scan, SSID/password changes, hostname changes, and restart are available. |
+| Network | Setup access point/captive setup | 🟢 Supported | The AxeOS AP onboarding route is available when station setup is required. |
+| Network | mDNS and AxeOS discovery | 🟢 Supported | Publishes HTTP and AxeOS DNS-SD records and supports `.local` access and Swarm discovery. |
+| Theme | Appearance | 🟢 Supported | Dark, light, and white themes plus custom accent colors are available and persisted. |
+| Settings | ASIC frequency and voltage | 🔴 Not supported | Board 1002 is deliberately locked to 800 MHz and a 2.8 V board rail; overclock mode does not expose tuning controls. |
+| Settings | Automatic/manual fan control | 🔴 Not supported | Bonanza safety requires the bridge-controlled fan at 100%; target temperature, minimum fan, and manual fan controls are not applied. |
+| Settings | Overheat-mode reset | 🔴 Not supported | Bonanza uses its dedicated fail-closed safety supervisor. A latched Bonanza fault requires inspection and restart rather than the generic overheat reset flow. |
+| Settings | Display configuration | 🟢 Supported | Display type, rotation, color inversion, and display timeout use the normal AxeOS display path. |
+| Settings | Statistics/data logging | 🟡 Partial | Logging and retention work, but generic power, temperature, voltage, and fan samples are not yet backed by Bonanza telemetry. |
+| Update | Manual ESP firmware OTA | 🟢 Supported | Uploading `esp-miner.bin` is guarded by a verified Bonanza safe-off transition before flash and restart. |
+| Update | Manual AxeOS OTA | 🟢 Supported | Uploading `www.bin`, progress reporting, and recovery mode are available. |
+| Update | RP2040 bridge firmware over HTTP | 🟢 Supported | AxeOS accepts a raw RP2040 `.bin`, moves the miner to verified safe-off, programs and verifies the bridge over onboard SWD, resets it, and confirms the running bridge version. |
+| Update | Latest-release lookup/download | 🔴 Not supported | AxeOS still queries the upstream ESP-Miner release feed, which is not Bonanza-aware and must not be used as a source of Bonanza firmware. |
+| Other | Bitcoin whitepaper | 🟢 Supported | The bundled whitepaper link is a static AxeOS feature. |
+| API | REST and live WebSocket API | 🟡 Partial | System, ASIC, statistics, scoreboard, logs, settings, restart, identify, ESP/AxeOS OTA, and bridge firmware update paths are available. Pause/resume and generic Bonanza power/heat/fan telemetry retain the limitations above. |
 
 ## Community
 The upstream ESP-Miner firmware and AxeOS are maintained by OSMU, which hosts a [discussion forum](https://osmu.xyz).
@@ -98,13 +99,15 @@ Available API endpoints:
   
 **GET**
 
-* `/api/system/info` Get system information
+* `/api/system/info` Get system information, including bridge firmware version and protocol compatibility
 * `/api/system/asic` Get ASIC settings information
 * `/api/system/statistics` Get system statistics (data logging should be activated)
 * `/api/system/statistics/dashboard` Get system statistics for dashboard
 * `/api/system/scoreboard` Get top 20 highest difficulty shares
 * `/api/system/wifi/scan` Scan for available Wi-Fi networks
 * `/api/system/logs` Download system logs
+* `/api/system/bridge` Get bridge firmware and protocol information
+* `/api/system/bridge/firmware/status` Get bridge firmware update progress and result
 
 **POST**
 
@@ -112,6 +115,7 @@ Available API endpoints:
 * `/api/system/identify` Identify the device
 * `/api/system/OTA` Update system firmware
 * `/api/system/OTAWWW` Update AxeOS
+* `/api/system/bridge/firmware` Update the RP2040 bridge from a raw `.bin`
 
 **PATCH**
 
@@ -174,6 +178,75 @@ websocat ws://YOUR-BITAXE-IP/api/ws
 # Stream Info API
 websocat ws://YOUR-BITAXE-IP/api/ws/live
 ```
+
+### Bridge firmware HTTP API
+
+`GET /api/system/info` includes the installed bridge version and protocol in the `asicHealth` object. The current production controller requires bridge protocol major `1`, minor `2` or a newer compatible minor version.
+
+```bash
+curl -s http://YOUR-BITAXE-IP/api/system/info | jq '.asicHealth | {
+  bridgeVersion,
+  bridgeProtocolMajor,
+  bridgeProtocolMinor,
+  bridgeCompatible
+}'
+```
+
+The bridge updater is available only on configured BZM bridge products. It stages the uploaded image in ESP32 PSRAM, acquires exclusive verified safe-off ownership, disconnects the bridge control UART, and uses the board's ESP32-to-RP2040 SWD connection to erase, program, and read-back verify the image. It then resets the RP2040, restores the control link, and queries the installed version. The update endpoints remain available even if the existing bridge firmware is unresponsive.
+
+## Bridge firmware
+
+The RP2040 bridge firmware is maintained separately in the [`johnny9/bonanza-bridge-fw`](https://github.com/johnny9/bonanza-bridge-fw) codebase. It controls the fan, board power/reset signals, safety lease, and the protected ESP32-S3-to-BZM2 data path, so its protocol must be compatible before ESP-Miner-Bonanza will energize the ASIC rail.
+
+Use the exact bridge revision or artifact paired with the ESP-Miner-Bonanza release and confirm that it implements protocol `1.2`; the bridge repository's default branch may not yet match the production controller. An older or incompatible bridge will leave ESP-Miner-Bonanza safely off.
+
+### Build the bridge firmware
+
+Install Rust, the RP2040 target, and `arm-none-eabi-objcopy`, then build the selected compatible bridge revision and convert it to a raw binary:
+
+```bash
+git clone https://github.com/johnny9/bonanza-bridge-fw.git
+cd bonanza-bridge-fw
+git checkout <compatible-release-or-commit>
+
+rustup target add thumbv6m-none-eabi
+cargo test --lib --target x86_64-unknown-linux-gnu
+cargo build --release --target thumbv6m-none-eabi
+
+arm-none-eabi-objcopy -O binary \
+  target/thumbv6m-none-eabi/release/bonanza-bridge-fw \
+  bonanza-bridge-fw.bin
+```
+
+### Flash over HTTP
+
+Keep the miner on stable power and connect to it through station-mode Wi-Fi, using either its IP address or `.local` hostname. Do not use AP/setup mode. Upload the raw binary as an unwrapped `application/octet-stream` body:
+
+```bash
+curl --fail --show-error --tcp-nodelay \
+  --connect-timeout 10 --max-time 180 \
+  -H 'Expect:' \
+  -H 'Content-Type: application/octet-stream' \
+  --data-binary @bonanza-bridge-fw.bin \
+  http://YOUR-BITAXE-IP/api/system/bridge/firmware
+```
+
+The upload returns `202 Accepted` with a status object. Poll the status endpoint until `running` is `false`:
+
+```bash
+watch -n 1 \
+  'curl -fsS http://YOUR-BITAXE-IP/api/system/bridge/firmware/status | jq'
+```
+
+The updater progresses through `preparing`, `erasing`, `programming`, `verifying`, `resetting`, and `querying`. Do not remove power during those states. A successful result ends in `complete`, reports `progress: 100`, and includes `currentVersion` when the new bridge supports version queries. A failed result ends in `failed` with an ESP-IDF error name; the recovery endpoint remains available for another upload.
+
+After a successful bridge update, restart ESP-Miner so the production controller performs its complete startup and compatibility checks against the new bridge:
+
+```bash
+curl -X POST http://YOUR-BITAXE-IP/api/system/restart
+```
+
+When the device returns, run the `/api/system/info` query above. Do not mine unless `bridgeCompatible` is `true` and the reported protocol is `1.2` or newer.
 
 ## mDNS Support
 

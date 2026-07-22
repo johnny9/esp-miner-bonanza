@@ -24,6 +24,82 @@ components:
       properties:
         message:
           type: string
+    BridgeInfo:
+      type: object
+      required:
+        - available
+        - versionQuerySupported
+        - version
+        - protocolMajor
+        - protocolMinor
+      properties:
+        available:
+          type: boolean
+          description: Whether the RP2040 bridge responded to the control UART
+        versionQuerySupported:
+          type: boolean
+          description: Whether the installed bridge implements the version query command
+        version:
+          anyOf:
+            - type: string
+            - type: 'null'
+          description: Installed bridge version, or null for older/unavailable firmware
+        protocolMajor:
+          anyOf:
+            - type: integer
+            - type: 'null'
+          description: Bridge control protocol major version
+        protocolMinor:
+          anyOf:
+            - type: integer
+            - type: 'null'
+          description: Bridge control protocol minor version
+    BridgeUpdateStatus:
+      type: object
+      required:
+        - state
+        - progress
+        - imageSize
+        - running
+        - versionQuerySupported
+        - currentVersion
+        - error
+      properties:
+        state:
+          type: string
+          enum:
+            - idle
+            - preparing
+            - erasing
+            - programming
+            - verifying
+            - resetting
+            - querying
+            - complete
+            - failed
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Progress within the current update state
+        imageSize:
+          type: integer
+          minimum: 0
+          maximum: 2097152
+        running:
+          type: boolean
+        versionQuerySupported:
+          type: boolean
+        currentVersion:
+          anyOf:
+            - type: string
+            - type: 'null'
+          description: Version reported after reset, when supported
+        error:
+          anyOf:
+            - type: string
+            - type: 'null'
+          description: ESP-IDF error name when the update failed
     UpdateSettingsResponse:
       type: object
       properties:
@@ -1346,3 +1422,75 @@ paths:
           description: Unauthorized - Client not in allowed network range
         '500':
           description: Internal server error
+
+  /api/system/bridge:
+    get:
+      summary: Query Bonanza bridge information
+      description: >-
+        Queries the RP2040 bridge over its control UART. This route is
+        registered only when the configured board uses a BZM ASIC and the
+        Bonanza bridge; it remains available when the bridge is unresponsive
+        so recovery is possible.
+      operationId: getBridgeInfo
+      tags:
+        - system
+      responses:
+        '200':
+          description: Bridge information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BridgeInfo'
+        '401':
+          description: Unauthorized - Client not in allowed network range
+
+  /api/system/bridge/firmware:
+    post:
+      summary: Update Bonanza bridge firmware
+      description: >-
+        Stages a separately supplied raw RP2040 .bin in ESP32 PSRAM and starts
+        an asynchronous SWD update. ESP-Miner contains only the small SRAM
+        flash helper and never bundles a bridge firmware image. This route is
+        registered only for configured BZM bridge products.
+      operationId: updateBridgeFirmware
+      tags:
+        - system
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '202':
+          description: Bridge update accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BridgeUpdateStatus'
+        '400':
+          description: Invalid RP2040 raw firmware image
+        '401':
+          description: Unauthorized - Client not in allowed network range
+        '409':
+          description: A bridge upload or update is already in progress
+        '503':
+          description: PSRAM is unavailable for image staging
+
+  /api/system/bridge/firmware/status:
+    get:
+      summary: Get Bonanza bridge update status
+      description: Returns the current asynchronous SWD update state.
+      operationId: getBridgeFirmwareUpdateStatus
+      tags:
+        - system
+      responses:
+        '200':
+          description: Bridge update status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BridgeUpdateStatus'
+        '401':
+          description: Unauthorized - Client not in allowed network range

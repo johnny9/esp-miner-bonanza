@@ -24,6 +24,37 @@ describe('SystemApiService', () => {
     expect(service).toBeTruthy();
   });
 
+  it('queries bridge information from the BZM-only endpoint', () => {
+    service.getBridgeInfo().subscribe(info => {
+      expect(info.version).toBe('1.2.3');
+    });
+    const request = http.expectOne(req =>
+      req.url.endsWith('/api/system/bridge'));
+    expect(request.request.method).toBe('GET');
+    request.flush({
+      available: true,
+      versionQuerySupported: true,
+      version: '1.2.3',
+      protocolMajor: 1,
+      protocolMinor: 0,
+    });
+  });
+
+  it('uploads the bridge image as an unwrapped octet stream', () => {
+    const image = new Blob(['bridge']);
+    service.performBridgeUpdate(image).subscribe();
+    const request = http.expectOne('/api/system/bridge/firmware');
+    expect(request.request.method).toBe('POST');
+    expect(request.request.headers.get('Content-Type'))
+      .toBe('application/octet-stream');
+    expect(request.request.body).toBe(image);
+    request.flush({
+      state: 'preparing', progress: 0, imageSize: image.size,
+      running: true, versionQuerySupported: false,
+      currentVersion: null, error: null,
+    });
+  });
+
   it('sends production settings through the generated API', () => {
     const settings = {
       hostname: 'bitaxe-test',

@@ -16,6 +16,7 @@
 #define RP2040_SRAM_END 0x20042000u
 #define RP2040_XIP_START 0x10000100u
 #define RP2040_XIP_END 0x10200000u
+#define BZM_BRIDGE_UPDATE_TASK_STACK_BYTES 6144u
 
 static const char *TAG = "bzm_bridge_update";
 static pthread_mutex_t UPDATE_LOCK = PTHREAD_MUTEX_INITIALIZER;
@@ -380,7 +381,14 @@ esp_err_t BZM_bridge_update_start(GlobalState *global_state,
     };
     pthread_mutex_unlock(&UPDATE_LOCK);
 
-    if (xTaskCreate(update_task, "bridge_update", 8192, update, 8, NULL) !=
+    /*
+     * Board 1002 has a 7680-byte largest internal heap block after normal
+     * startup. Keep this worker below that bound; its image buffer is staged
+     * separately in PSRAM.
+     */
+    if (xTaskCreate(update_task, "bridge_update",
+                    BZM_BRIDGE_UPDATE_TASK_STACK_BYTES,
+                    update, 8, NULL) !=
         pdPASS) {
         pthread_mutex_lock(&UPDATE_LOCK);
         UPDATE_STATUS.running = false;

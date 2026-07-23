@@ -164,18 +164,6 @@ size_t bzm_frame_parser_pending_bytes(const bzm_frame_parser_t * parser)
     return parser == NULL ? 0 : parser->buffered_length;
 }
 
-size_t bzm_frame_parser_discard_pending(bzm_frame_parser_t *parser)
-{
-    if (parser == NULL) return 0;
-    size_t discarded = parser->buffered_length;
-    while (parser->buffered_length != 0) {
-        record_discard(parser, parser->buffer[0]);
-        discard_prefix(parser, 1);
-        parser->discarded_bytes++;
-    }
-    return discarded;
-}
-
 size_t bzm_frame_parser_recent_discards(const bzm_frame_parser_t * parser, uint8_t * output, size_t capacity)
 {
     if (parser == NULL || output == NULL || capacity == 0) {

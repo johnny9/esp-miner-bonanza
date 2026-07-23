@@ -85,7 +85,7 @@ menu "Bitaxe Configuration"
             help
                 After each logical engine has been programmed on all four
                 ASICs, wait for ESP UART TX completion, leave this bounded
-                idle interval on the 2 Mbaud protected bridge link, and drain received TDM
+                idle interval on the 2 Mbaud raw bridge link, and drain received TDM
                 traffic. Zero disables the idle interval but retains the TX
                 completion and RX-drain checkpoint. Any checkpoint failure or
                 parser corruption outside the separately configured bounded
@@ -97,11 +97,11 @@ menu "Bitaxe Configuration"
             default 256
             help
                 Maximum discarded bytes in one recoverable RUNNING burst.
-                The production bridge integrity envelope and local SHA-256
-                validation prevent discarded wire data from becoming shares.
-                This bound covers the largest device-observed short burst
-                while the independent event and ten-second bounds still make
-                sustained corruption BAD.
+                The BIRDS-compatible ASIC-ID/opcode parser resynchronizes after
+                discarded bytes, and local SHA-256 validation prevents damaged
+                result payloads from becoming shares. This bound covers the
+                largest device-observed short burst while the independent event
+                and ten-second bounds still make sustained corruption BAD.
 
         config BZM_1002_PARSER_REALIGN_CLEAN_WINDOWS
             int "Clean health windows required after parser realignment"

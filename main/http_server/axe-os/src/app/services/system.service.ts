@@ -186,15 +186,10 @@ export class SystemApiService {
           fanRPM: 4300,
           bridgeVersion: '1.1.0',
           bridgeProtocolMajor: 1,
-          bridgeProtocolMinor: 2,
+          bridgeProtocolMinor: 0,
           bridgeCompatible: true,
           parserDiscardedBytes: 12,
           parserRecoveries: 2,
-          addressMarkRealignments: 1,
-          transportCrcFailures: 0,
-          transportSequenceGaps: 0,
-          transportDuplicateFrames: 0,
-          transportDiscardedWireBytes: 0,
           bridgePioFifoOverflows: 0,
           bridgeSoftwareRingOverflows: 0,
           mappedResults: 240,
@@ -444,7 +439,7 @@ export class SystemApiService {
       versionQuerySupported: true,
       version: '0.0.1+gabcdef',
       protocolMajor: 1,
-      protocolMinor: 2,
+      protocolMinor: 0,
     });
   }
 

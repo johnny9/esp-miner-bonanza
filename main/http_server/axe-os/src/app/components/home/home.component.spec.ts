@@ -149,15 +149,10 @@ describe('HomeComponent', () => {
         fanRPM: 5200,
         bridgeVersion: '0.0.1+mvo',
         bridgeProtocolMajor: 1,
-        bridgeProtocolMinor: 2,
+        bridgeProtocolMinor: 0,
         bridgeCompatible: true,
         parserDiscardedBytes: 2,
         parserRecoveries: 1,
-        addressMarkRealignments: 1,
-        transportCrcFailures: 0,
-        transportSequenceGaps: 0,
-        transportDuplicateFrames: 0,
-        transportDiscardedWireBytes: 0,
         bridgePioFifoOverflows: 0,
         bridgeSoftwareRingOverflows: 0,
         mappedResults: 240,
@@ -185,7 +180,7 @@ describe('HomeComponent', () => {
     expect(text).toContain('944 / 944 engines');
     expect(text).toContain('800 MHz at 2800 mV fixed');
     expect(text).toContain('2.800 V measured');
-    expect(text).toContain('protocol 1.2');
+    expect(text).toContain('protocol 1.0');
     expect(text).toContain('Mapped results: 240');
     expect(text).toContain('Locally valid: 220');
     expect(text).not.toContain('validation stage');

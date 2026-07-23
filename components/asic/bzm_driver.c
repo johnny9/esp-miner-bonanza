@@ -146,7 +146,7 @@ int BZM_set_max_baud(void)
 uint8_t BZM_init(GlobalState * state)
 {
     if (state == NULL || SERIAL_set_baud(BZM_set_max_baud()) != ESP_OK) {
-        ESP_LOGE(TAG, "Could not select the 2 Mbaud protected BZM bridge link");
+        ESP_LOGE(TAG, "Could not select the 2 Mbaud raw BZM bridge link");
         return 0;
     }
 

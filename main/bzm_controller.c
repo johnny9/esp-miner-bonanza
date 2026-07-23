@@ -41,11 +41,13 @@ typedef struct
     bzm_supervisor_t supervisor;
     bzm_bridge_info_t bridge_info;
     bzm_bridge_safety_status_t bridge_status;
+    bzm_bridge_rx_stats_t bridge_rx_stats;
     bool active;
     bool initialized;
     bool monitor_running;
     bool bridge_info_valid;
     bool bridge_status_valid;
+    bool bridge_rx_stats_valid;
     bool mining_stack_ready;
     bool mining_tasks_started;
     bool protocol_coordinator_initialized;
@@ -229,25 +231,15 @@ static void publish_driver_health_locked(asic_driver_lifecycle_t lifecycle)
             ? RUNTIME.bridge_info.protocol_minor : 0,
         .bridge_compatible = RUNTIME.bridge_info_valid &&
             RUNTIME.bridge_status_valid &&
-            bzm_bridge_info_supports_data_link(&RUNTIME.bridge_info) &&
+            bzm_bridge_info_supports_raw_rx(&RUNTIME.bridge_info) &&
             bridge_control_contract_compatible(&RUNTIME.bridge_status),
         .parser_discarded_bytes = RUNTIME.parser_sample_valid
             ? RUNTIME.parser_sample.discarded_bytes : 0,
         .parser_recoveries = RUNTIME.parser_recovery_count,
-        .address_mark_realignments = RUNTIME.parser_sample_valid
-            ? RUNTIME.parser_sample.address_mark_realignments : 0,
-        .transport_crc_failures = RUNTIME.parser_sample_valid
-            ? RUNTIME.parser_sample.transport_crc_failures : 0,
-        .transport_sequence_gaps = RUNTIME.parser_sample_valid
-            ? RUNTIME.parser_sample.transport_sequence_gaps : 0,
-        .transport_duplicate_frames = RUNTIME.parser_sample_valid
-            ? RUNTIME.parser_sample.transport_duplicate_frames : 0,
-        .transport_discarded_wire_bytes = RUNTIME.parser_sample_valid
-            ? RUNTIME.parser_sample.transport_discarded_wire_bytes : 0,
-        .bridge_pio_fifo_overflows = RUNTIME.parser_sample_valid
-            ? RUNTIME.parser_sample.bridge_pio_fifo_overflows : 0,
-        .bridge_software_ring_overflows = RUNTIME.parser_sample_valid
-            ? RUNTIME.parser_sample.bridge_software_ring_overflows : 0,
+        .bridge_pio_fifo_overflows = RUNTIME.bridge_rx_stats_valid
+            ? RUNTIME.bridge_rx_stats.pio_fifo_overflows : 0,
+        .bridge_software_ring_overflows = RUNTIME.bridge_rx_stats_valid
+            ? RUNTIME.bridge_rx_stats.software_ring_overflows : 0,
         .mapped_results = running.mapped_results,
         .locally_valid_results = running.locally_valid_results,
         .mapping_rejections = running.mapping_rejections,
@@ -467,6 +459,11 @@ static bzm_runtime_health_result_t sample_runtime_health_locked(void)
         input.fan_tach_available = BZM_bridge_get_fan_rpm(&input.fan_rpm) == ESP_OK;
         if (input.fan_tach_available)
             RUNTIME.fan_rpm = input.fan_rpm;
+        bzm_bridge_rx_stats_t rx_stats;
+        RUNTIME.bridge_rx_stats_valid =
+            BZM_bridge_get_rx_stats(&rx_stats) == ESP_OK && rx_stats.valid;
+        if (RUNTIME.bridge_rx_stats_valid)
+            RUNTIME.bridge_rx_stats = rx_stats;
     }
 
     if (input.holding && input.reached_stage >= BZM_STAGE_POWER_RAIL) {
@@ -662,9 +659,14 @@ static bool bridge_has_independent_kill(const bzm_bridge_safety_status_t * statu
 static void refresh_bridge_evidence_locked(void)
 {
     RUNTIME.bridge_info_valid =
-        BZM_bridge_get_info(&RUNTIME.bridge_info) == ESP_OK && bzm_bridge_info_supports_data_link(&RUNTIME.bridge_info);
+        BZM_bridge_get_info(&RUNTIME.bridge_info) == ESP_OK &&
+        bzm_bridge_info_supports_raw_rx(&RUNTIME.bridge_info);
     RUNTIME.bridge_status_valid =
         RUNTIME.bridge_info_valid && BZM_bridge_get_safety_status(&RUNTIME.bridge_status) == ESP_OK && RUNTIME.bridge_status.valid;
+    RUNTIME.bridge_rx_stats_valid =
+        RUNTIME.bridge_info_valid &&
+        BZM_bridge_get_rx_stats(&RUNTIME.bridge_rx_stats) == ESP_OK &&
+        RUNTIME.bridge_rx_stats.valid;
     RUNTIME.supervisor.config.independent_kill_available =
         RUNTIME.bridge_status_valid && bridge_has_independent_kill(&RUNTIME.bridge_status);
 }
@@ -690,7 +692,7 @@ static bzm_stage_result_t runtime_force_safe_off(void * context)
     (void) BZM_staged_hold_reset();
     BZM_staged_set_dispatch_authorizer(runtime_dispatch_authorizer, &RUNTIME);
 
-    /* Disarm is best-effort for recovery from pre-1.1 bridge firmware. */
+    /* Disarm is best-effort for recovery from legacy unversioned firmware. */
     (void) BZM_bridge_disarm_safety(&status);
     commands_ok = BZM_bridge_set_asic_reset(false) == ESP_OK && commands_ok;
     commands_ok = BZM_bridge_set_5v_enabled(false) == ESP_OK && commands_ok;
@@ -757,12 +759,20 @@ static bzm_stage_result_t runtime_force_safe_off(void * context)
 static bzm_stage_result_t run_controls(GlobalState * state)
 {
     bzm_bridge_safety_status_t status;
-    if (BZM_bridge_get_info(&RUNTIME.bridge_info) != ESP_OK || !bzm_bridge_info_supports_data_link(&RUNTIME.bridge_info)) {
+    if (BZM_bridge_get_info(&RUNTIME.bridge_info) != ESP_OK ||
+        !bzm_bridge_info_supports_raw_rx(&RUNTIME.bridge_info)) {
         RUNTIME.bridge_info_valid = false;
         return bzm_validation_result(BZM_CHECK_BLOCKED, BZM_VALIDATION_CODE_NOT_IMPLEMENTED,
-                                     "bridge protocol 1.2 safety and protected data transport are required");
+                                     "bridge protocol 1.0 raw RX and receive stats are required");
     }
     RUNTIME.bridge_info_valid = true;
+    if (BZM_bridge_get_rx_stats(&RUNTIME.bridge_rx_stats) != ESP_OK ||
+        !RUNTIME.bridge_rx_stats.valid) {
+        RUNTIME.bridge_rx_stats_valid = false;
+        return bzm_validation_result(BZM_CHECK_BAD, BZM_VALIDATION_CODE_STAGE_FAILED,
+                                     "bridge receive stats are unavailable or malformed");
+    }
+    RUNTIME.bridge_rx_stats_valid = true;
 
     if (BZM_bridge_get_safety_status(&status) != ESP_OK || !status.valid ||
         status.state != BZM_BRIDGE_SAFETY_STATE_SAFE_OFF ||
@@ -790,7 +800,7 @@ static bzm_stage_result_t run_controls(GlobalState * state)
     RUNTIME.bridge_status = status;
     RUNTIME.bridge_status_valid = true;
     return bzm_validation_result(BZM_CHECK_GOOD, BZM_VALIDATION_CODE_STAGE_OK,
-                                 "protocol 1.1, safety status, lease heartbeat, trip-clear state and fan tach are GOOD");
+                                 "protocol 1.0, safety status, lease heartbeat, trip-clear state and fan tach are GOOD");
 }
 
 static bzm_stage_result_t run_power_rail(GlobalState * state)

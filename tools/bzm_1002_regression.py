@@ -295,8 +295,6 @@ def sample_device(report: Report, base_url: str, duration: int,
             "dispatchFailures": health.get("dispatchFailures"),
             "parserDiscardedBytes": health.get("parserDiscardedBytes"),
             "parserRecoveries": health.get("parserRecoveries"),
-            "transportCrcFailures": health.get("transportCrcFailures"),
-            "transportSequenceGaps": health.get("transportSequenceGaps"),
             "bridgePioFifoOverflows": health.get("bridgePioFifoOverflows"),
             "bridgeSoftwareRingOverflows": health.get("bridgeSoftwareRingOverflows"),
         }
@@ -360,6 +358,10 @@ def check_sample_deltas(report: Report, min_hashrate_ghs: float,
     report.check("no dispatch failures",
                  (last.get("dispatchFailures") or 0) == (first.get("dispatchFailures") or 0),
                  f"delta={(last.get('dispatchFailures') or 0) - (first.get('dispatchFailures') or 0)}")
+    pio_delta = ((last.get("bridgePioFifoOverflows") or 0) -
+                 (first.get("bridgePioFifoOverflows") or 0))
+    report.check("bridge PIO FIFO remains lossless", pio_delta == 0,
+                 f"delta={pio_delta}")
     ring_delta = ((last.get("bridgeSoftwareRingOverflows") or 0) -
                   (first.get("bridgeSoftwareRingOverflows") or 0))
     report.check("bridge software ring remains lossless", ring_delta == 0,

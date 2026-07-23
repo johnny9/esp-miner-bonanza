@@ -123,7 +123,6 @@ static void reset_io_state(bzm_serial_transport_t * transport, bool reset_teleme
     io->register_ready = false;
     io->noop_pending = false;
     io->noop_ready = false;
-    io->address_mark_synchronized = false;
     io->parser.buffered_length = 0;
     memset(io->parser.expected_register_length, 0, sizeof(io->parser.expected_register_length));
     if (reset_telemetry)
@@ -141,7 +140,6 @@ static void reset_io_state(bzm_serial_transport_t * transport, bool reset_teleme
         io->unsolicited_noop_frames = 0;
         io->invalid_noop_frames = 0;
         io->telemetry_decode_failures = 0;
-        io->address_mark_realignments = 0;
     }
     pthread_mutex_unlock(&io->lock);
 }
@@ -155,45 +153,6 @@ size_t bzm_serial_transport_ingest_bytes(bzm_serial_transport_t * transport, con
     pthread_mutex_lock(&transport->io.lock);
     size_t emitted = bzm_frame_parser_feed(&transport->io.parser, data, data_length, timestamp_us);
     pthread_mutex_unlock(&transport->io.lock);
-    return emitted;
-}
-
-size_t bzm_serial_transport_ingest_marked(bzm_serial_transport_t *transport,
-                                          const uint8_t *data,
-                                          const uint8_t *ninth_bits,
-                                          size_t data_length,
-                                          uint64_t timestamp_us)
-{
-    if (transport == NULL || !transport->io.initialized ||
-        (data == NULL && data_length != 0) ||
-        (ninth_bits == NULL && data_length != 0)) {
-        return 0;
-    }
-
-    bzm_serial_io_state_t *io = &transport->io;
-    pthread_mutex_lock(&io->lock);
-    size_t emitted = 0;
-    for (size_t index = 0; index < data_length; ++index) {
-        if (ninth_bits[index] > 1) continue;
-        /* Live 1002 TDM telemetry sets bit 8 on both its final payload byte
-         * and the following ASIC-ID byte. A high ninth bit is therefore an
-         * address boundary only when the byte itself is a valid wire ID. */
-        bool address_mark = ninth_bits[index] == 1 &&
-            (addressed_asic(data[index]) ||
-             data[index] == BZM_TDM_BROADCAST_ASIC_ID);
-        if (address_mark) {
-            if (io->address_mark_synchronized &&
-                bzm_frame_parser_pending_bytes(&io->parser) != 0) {
-                (void)bzm_frame_parser_discard_pending(&io->parser);
-                io->address_mark_realignments++;
-            }
-            io->address_mark_synchronized = true;
-        }
-        if (!io->address_mark_synchronized) continue;
-        emitted += bzm_frame_parser_feed(&io->parser, data + index, 1,
-                                         timestamp_us);
-    }
-    pthread_mutex_unlock(&io->lock);
     return emitted;
 }
 
@@ -464,19 +423,9 @@ bool bzm_serial_get_parser_stats(bzm_serial_transport_t * transport, bzm_serial_
         .unsolicited_noop_frames = io->unsolicited_noop_frames,
         .invalid_noop_frames = io->invalid_noop_frames,
         .telemetry_decode_failures = io->telemetry_decode_failures,
-        .address_mark_realignments = io->address_mark_realignments,
         .buffered_bytes = io->parser.buffered_length,
         .queued_results = io->pending_result_length,
     };
-    bzm_data_link_stats_t link_stats;
-    if (SERIAL_get_data_link_stats(&link_stats)) {
-        stats->transport_crc_failures = link_stats.crc_failures;
-        stats->transport_sequence_gaps = link_stats.sequence_gaps;
-        stats->transport_duplicate_frames = link_stats.duplicate_frames;
-        stats->transport_discarded_wire_bytes = link_stats.discarded_wire_bytes;
-        stats->bridge_pio_fifo_overflows = link_stats.pio_fifo_overflows;
-        stats->bridge_software_ring_overflows = link_stats.software_ring_overflows;
-    }
     stats->recent_discarded_length = bzm_frame_parser_recent_discards(
         &io->parser, stats->recent_discarded_bytes, sizeof(stats->recent_discarded_bytes));
     pthread_mutex_unlock(&io->lock);
@@ -487,30 +436,28 @@ size_t bzm_serial_poll(bzm_serial_transport_t * transport, uint16_t timeout_ms)
 {
     enum {
         BZM_POLL_BUFFER_SIZE = 128U,
-        BZM_POLL_MAX_DRAIN_BYTES = SERIAL_RX_BUFFER_BYTES * 2U,
+        BZM_POLL_MAX_DRAIN_BYTES = SERIAL_RX_BUFFER_BYTES,
     };
     if (transport == NULL || !transport->io.initialized || timeout_ms == 0)
         return 0;
 
     uint8_t received[BZM_POLL_BUFFER_SIZE];
-    uint8_t ninth_bits[BZM_POLL_BUFFER_SIZE];
-    int16_t length = SERIAL_rx_marked(received, ninth_bits, 1, timeout_ms);
+    int16_t length = SERIAL_rx(received, 1, timeout_ms);
     size_t total_bytes = 0;
     size_t emitted = 0;
     while (length > 0 && total_bytes < BZM_POLL_MAX_DRAIN_BYTES) {
         size_t accepted = (size_t)length;
         if (accepted > sizeof(received) ||
             accepted > BZM_POLL_MAX_DRAIN_BYTES - total_bytes) break;
-        emitted += bzm_serial_transport_ingest_marked(
-            transport, received, ninth_bits, accepted,
-            (uint64_t)esp_timer_get_time());
+        emitted += bzm_serial_transport_ingest_bytes(
+            transport, received, accepted, (uint64_t)esp_timer_get_time());
         total_bytes += accepted;
         uint16_t capacity = (uint16_t)sizeof(received);
         if (BZM_POLL_MAX_DRAIN_BYTES - total_bytes < capacity) {
             capacity = (uint16_t)(BZM_POLL_MAX_DRAIN_BYTES - total_bytes);
         }
         if (capacity == 0) break;
-        length = SERIAL_rx_marked(received, ninth_bits, capacity, 0);
+        length = SERIAL_rx(received, capacity, 0);
     }
     return emitted;
 }
@@ -521,7 +468,7 @@ size_t bzm_serial_poll_with_reader(bzm_serial_transport_t * transport, uint16_t 
     enum
     {
         BZM_POLL_BUFFER_SIZE = 128U,
-        BZM_POLL_MAX_DRAIN_BYTES = SERIAL_RX_BUFFER_BYTES * 2U,
+        BZM_POLL_MAX_DRAIN_BYTES = SERIAL_RX_BUFFER_BYTES,
     };
     if (transport == NULL || !transport->io.initialized || timeout_ms == 0 || reader == NULL)
         return 0;

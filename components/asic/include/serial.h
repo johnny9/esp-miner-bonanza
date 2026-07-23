@@ -5,7 +5,6 @@
 #include <stdint.h>
 
 #include "esp_err.h"
-#include "bzm_data_link.h"
 
 typedef enum
 {
@@ -24,7 +23,7 @@ typedef enum
 #define SERIAL_RX_MAX_DISPATCH_BLACKOUT_MS 1250U
 #define SERIAL_HARDWARE_FIFO_BYTES 128U
 #define SERIAL_RX_FIFO_FULL_THRESHOLD 32U
-#define SERIAL_WIRE_BYTES_PER_SECOND 500000U
+#define SERIAL_WIRE_BYTES_PER_SECOND 200000U
 #define SERIAL_MAX_ISR_LATENCY_US 150U
 
 static inline bool SERIAL_buffer_capacity_covers(uint32_t buffer_bytes, uint32_t bytes_per_second,
@@ -51,8 +50,6 @@ esp_err_t SERIAL_ensure_initialized(int baud);
 esp_err_t SERIAL_prepare_session(int baud);
 void SERIAL_debug_rx(void);
 int16_t SERIAL_rx(uint8_t *, uint16_t, uint16_t);
-int16_t SERIAL_rx_marked(uint8_t *, uint8_t *, uint16_t, uint16_t);
-bool SERIAL_get_data_link_stats(bzm_data_link_stats_t *stats);
 void SERIAL_clear_buffer(void);
 esp_err_t SERIAL_set_baud(int baud);
 esp_err_t SERIAL_wait_tx_done(uint32_t timeout_ms);

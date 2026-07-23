@@ -19,7 +19,6 @@ SRCS
     "bzm_bringup.c"
     "bzm_dispatch_gate.c"
     "bzm_lease_guard.c"
-    "bzm_data_link.c"
     "bzm_frame_parser.c"
     "bzm_registers.c"
     "bzm_telemetry.c"

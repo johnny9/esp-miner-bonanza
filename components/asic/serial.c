@@ -1,16 +1,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "driver/uart.h"
 
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "soc/uart_struct.h"
 
-#include "bzm_data_link.h"
 #include "serial.h"
 #include "utils.h"
 
@@ -18,17 +15,6 @@
 #define ECHO_TEST_RXD (18)
 
 static const char * TAG = "serial";
-static bzm_data_link_decoder_t DATA_LINK_DECODER;
-static uint8_t DATA_LINK_WIRE_BUFFER[256];
-static size_t DATA_LINK_WIRE_OFFSET;
-static size_t DATA_LINK_WIRE_LENGTH;
-
-static void reset_data_link_stream(void)
-{
-    DATA_LINK_WIRE_OFFSET = 0;
-    DATA_LINK_WIRE_LENGTH = 0;
-    bzm_data_link_decoder_reset_stream(&DATA_LINK_DECODER);
-}
 
 esp_err_t SERIAL_init(void)
 {
@@ -72,9 +58,6 @@ esp_err_t SERIAL_init(void)
         (void) uart_driver_delete(UART_NUM_1);
         return err;
     }
-    bzm_data_link_decoder_init(&DATA_LINK_DECODER);
-    DATA_LINK_WIRE_OFFSET = 0;
-    DATA_LINK_WIRE_LENGTH = 0;
     return ESP_OK;
 }
 
@@ -130,9 +113,7 @@ esp_err_t SERIAL_prepare_session(int baud)
      * ESP UART driver's RX ring.  The staged transport installs a fresh
      * parser for every run, so carrying those bytes into the next session
      * would make its first chain probe fail as malformed I/O. */
-    err = uart_flush_input(UART_NUM_1);
-    if (err == ESP_OK) reset_data_link_stream();
-    return err;
+    return uart_flush_input(UART_NUM_1);
 }
 
 int SERIAL_send(uint8_t * data, int len, bool debug)
@@ -157,71 +138,11 @@ static TickType_t timeout_ticks(uint32_t timeout_ms)
     return ticks == 0 ? 1 : ticks;
 }
 
-static int read_wire_bytes(uint32_t timeout_ms)
-{
-    DATA_LINK_WIRE_OFFSET = 0;
-    DATA_LINK_WIRE_LENGTH = 0;
-
-    size_t buffered = 0;
-    if (uart_get_buffered_data_len(UART_NUM_1, &buffered) != ESP_OK) return -1;
-    if (buffered == 0 && timeout_ms != 0) {
-        int first = uart_read_bytes(UART_NUM_1, DATA_LINK_WIRE_BUFFER, 1,
-                                    timeout_ticks(timeout_ms));
-        if (first <= 0) return first;
-        DATA_LINK_WIRE_LENGTH = (size_t)first;
-        if (uart_get_buffered_data_len(UART_NUM_1, &buffered) != ESP_OK) return -1;
-    }
-
-    size_t capacity = sizeof(DATA_LINK_WIRE_BUFFER) - DATA_LINK_WIRE_LENGTH;
-    if (buffered > capacity) buffered = capacity;
-    if (buffered != 0) {
-        int drained = uart_read_bytes(UART_NUM_1,
-            DATA_LINK_WIRE_BUFFER + DATA_LINK_WIRE_LENGTH, buffered, 0);
-        if (drained < 0) return drained;
-        DATA_LINK_WIRE_LENGTH += (size_t)drained;
-    }
-    return (int)DATA_LINK_WIRE_LENGTH;
-}
-
-int16_t SERIAL_rx_marked(uint8_t *buf, uint8_t *ninth_bits, uint16_t size,
-                         uint16_t timeout_ms)
-{
-    if (buf == NULL || size == 0 || !SERIAL_is_initialized()) return -1;
-
-    size_t decoded = bzm_data_link_decoder_read(&DATA_LINK_DECODER, buf,
-                                                 ninth_bits, size);
-    if (decoded != 0) return (int16_t)decoded;
-
-    int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
-    while (true) {
-        if (DATA_LINK_WIRE_OFFSET < DATA_LINK_WIRE_LENGTH) {
-            size_t consumed = bzm_data_link_decoder_feed(
-                &DATA_LINK_DECODER,
-                DATA_LINK_WIRE_BUFFER + DATA_LINK_WIRE_OFFSET,
-                DATA_LINK_WIRE_LENGTH - DATA_LINK_WIRE_OFFSET);
-            DATA_LINK_WIRE_OFFSET += consumed;
-            decoded = bzm_data_link_decoder_read(&DATA_LINK_DECODER, buf,
-                                                  ninth_bits, size);
-            if (decoded != 0) return (int16_t)decoded;
-            if (DATA_LINK_WIRE_OFFSET < DATA_LINK_WIRE_LENGTH && consumed == 0)
-                return -1;
-            continue;
-        }
-
-        uint32_t remaining_ms = 0;
-        if (timeout_ms != 0) {
-            int64_t remaining_us = deadline_us - esp_timer_get_time();
-            if (remaining_us <= 0) return 0;
-            remaining_ms = (uint32_t)((remaining_us + 999) / 1000);
-        }
-        int wire_read = read_wire_bytes(remaining_ms);
-        if (wire_read <= 0) return (int16_t)wire_read;
-    }
-}
-
 int16_t SERIAL_rx(uint8_t * buf, uint16_t size, uint16_t timeout_ms)
 {
-    int16_t bytes_read = SERIAL_rx_marked(buf, NULL, size, timeout_ms);
+    if (buf == NULL || size == 0 || !SERIAL_is_initialized()) return -1;
+    int16_t bytes_read = (int16_t) uart_read_bytes(
+        UART_NUM_1, buf, size, timeout_ticks(timeout_ms));
 
 #if BM1397_SERIALRX_DEBUG || BM1366_SERIALRX_DEBUG || BM1368_SERIALRX_DEBUG || BM1370_SERIALRX_DEBUG
     size_t buff_len = 0;
@@ -234,16 +155,6 @@ int16_t SERIAL_rx(uint8_t * buf, uint16_t size, uint16_t timeout_ms)
 #endif
 
     return bytes_read;
-}
-
-bool SERIAL_get_data_link_stats(bzm_data_link_stats_t *stats)
-{
-    if (stats == NULL) return false;
-    const bzm_data_link_stats_t *current =
-        bzm_data_link_decoder_stats(&DATA_LINK_DECODER);
-    if (current == NULL) return false;
-    *stats = *current;
-    return true;
 }
 
 void SERIAL_debug_rx(void)
@@ -263,5 +174,4 @@ void SERIAL_debug_rx(void)
 void SERIAL_clear_buffer(void)
 {
     uart_flush(UART_NUM_1);
-    reset_data_link_stream();
 }

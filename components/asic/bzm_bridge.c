@@ -111,14 +111,18 @@ bool bzm_bridge_info_supports_safety(const bzm_bridge_info_t *info)
 {
     return info != NULL &&
            info->schema_version == BZM_BRIDGE_INFO_SCHEMA_VERSION &&
-           info->protocol_major == BZM_BRIDGE_SAFETY_PROTOCOL_MAJOR &&
-           info->protocol_minor >= BZM_BRIDGE_SAFETY_PROTOCOL_MINOR;
+           info->protocol_major == BZM_BRIDGE_PROTOCOL_MAJOR;
 }
 
-bool bzm_bridge_info_supports_data_link(const bzm_bridge_info_t *info)
+bool bzm_bridge_info_supports_raw_rx(const bzm_bridge_info_t *info)
 {
-    return bzm_bridge_info_supports_safety(info) &&
-           info->protocol_minor >= BZM_BRIDGE_DATA_LINK_PROTOCOL_MINOR;
+    return bzm_bridge_info_supports_safety(info);
+}
+
+static void invalidate_rx_stats(bzm_bridge_rx_stats_t *stats)
+{
+    if (stats == NULL) return;
+    memset(stats, 0, sizeof(*stats));
 }
 
 static void invalidate_safety_status(bzm_bridge_safety_status_t *status)
@@ -142,6 +146,27 @@ static uint32_t read_le32(const uint8_t *value)
            ((uint32_t)value[1] << 8) |
            ((uint32_t)value[2] << 16) |
            ((uint32_t)value[3] << 24);
+}
+
+esp_err_t bzm_bridge_decode_rx_stats(const uint8_t *payload,
+                                     size_t payload_length,
+                                     bzm_bridge_rx_stats_t *stats)
+{
+    if (stats == NULL) return ESP_ERR_INVALID_ARG;
+    invalidate_rx_stats(stats);
+    if (payload == NULL) return ESP_ERR_INVALID_ARG;
+    if (payload_length != BZM_BRIDGE_RX_STATS_LENGTH ||
+        payload[0] != BZM_BRIDGE_RX_STATS_SCHEMA_VERSION) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    *stats = (bzm_bridge_rx_stats_t) {
+        .valid = true,
+        .schema_version = payload[0],
+        .pio_fifo_overflows = read_le32(payload + 1),
+        .software_ring_overflows = read_le32(payload + 5),
+    };
+    return ESP_OK;
 }
 
 static bool valid_safety_stage(uint8_t value)
@@ -554,6 +579,21 @@ esp_err_t BZM_bridge_get_info(bzm_bridge_info_t *info)
                  &response_length, 500),
         TAG, "bridge info command failed");
     return bzm_bridge_decode_info(response, response_length, info);
+}
+
+esp_err_t BZM_bridge_get_rx_stats(bzm_bridge_rx_stats_t *stats)
+{
+    if (stats == NULL) return ESP_ERR_INVALID_ARG;
+    invalidate_rx_stats(stats);
+
+    uint8_t response[BZM_BRIDGE_RX_STATS_LENGTH];
+    size_t response_length = 0;
+    esp_err_t err = transact(
+        BZM_BRIDGE_PAGE_SYSTEM, BZM_BRIDGE_SYSTEM_GET_RX_STATS,
+        NULL, 0, response, sizeof(response), &response_length, 500);
+    if (err == ESP_ERR_INVALID_SIZE) return ESP_ERR_INVALID_RESPONSE;
+    if (err != ESP_OK) return err;
+    return bzm_bridge_decode_rx_stats(response, response_length, stats);
 }
 
 static esp_err_t safety_command(uint8_t command,

@@ -196,9 +196,9 @@ The bridge updater is available only on configured BZM bridge products. It stage
 
 ## Bridge firmware
 
-The RP2040 bridge firmware is maintained separately in the [`johnny9/bonanza-bridge-fw`](https://github.com/johnny9/bonanza-bridge-fw) codebase. It controls the fan, board power/reset signals, safety lease, and the protected ESP32-S3-to-BZM2 data path, so its protocol must be compatible before ESP-Miner-Bonanza will energize the ASIC rail.
+The RP2040 bridge firmware is maintained separately in the [`johnny9/bonanza-bridge-fw`](https://github.com/johnny9/bonanza-bridge-fw) codebase. It controls the fan, board power/reset signals, safety lease, and the DMA-buffered raw ESP32-S3-to-BZM2 data path, so its protocol must be compatible before ESP-Miner-Bonanza will energize the ASIC rail.
 
-Use the exact bridge revision or artifact paired with the ESP-Miner-Bonanza release and confirm that it implements protocol `1.2`; the bridge repository's default branch may not yet match the production controller. An older or incompatible bridge will leave ESP-Miner-Bonanza safely off.
+Use the exact bridge revision or artifact paired with the ESP-Miner-Bonanza release and confirm that it implements protocol `1.0`; an older or incompatible bridge will leave ESP-Miner-Bonanza safely off.
 
 ### Build the bridge firmware
 
@@ -246,7 +246,7 @@ After a successful bridge update, restart ESP-Miner so the production controller
 curl -X POST http://YOUR-BITAXE-IP/api/system/restart
 ```
 
-When the device returns, run the `/api/system/info` query above. Do not mine unless `bridgeCompatible` is `true` and the reported protocol is `1.2` or newer.
+When the device returns, run the `/api/system/info` query above. Do not mine unless `bridgeCompatible` is `true` and the reported protocol is `1.0` or newer.
 
 ## mDNS Support
 

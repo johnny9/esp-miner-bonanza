@@ -12,6 +12,9 @@
 
 typedef struct GlobalState GlobalState;
 
+#define BZM_BRIDGE_IMAGE_MANIFEST_SIZE 96u
+#define BZM_BRIDGE_IMAGE_TARGET_BOARD_VERSION 1002u
+
 typedef bool (*bzm_bridge_update_maintenance_fn)(void *context);
 
 typedef enum {
@@ -27,11 +30,25 @@ typedef enum {
 } bzm_bridge_update_state_t;
 
 typedef struct {
+    size_t offset;
+    uint16_t target_board_version;
+    uint8_t protocol_major;
+    uint8_t protocol_minor;
+    char version[BZM_BRIDGE_VERSION_MAX_LENGTH + 1];
+} bzm_bridge_image_manifest_t;
+
+typedef struct {
     bzm_bridge_update_state_t state;
     uint8_t progress_percent;
     size_t image_size;
     bool running;
+    bool manifest_validated;
+    bool force_requested;
     bool version_query_supported;
+    uint16_t target_board_version;
+    uint8_t image_protocol_major;
+    uint8_t image_protocol_minor;
+    char image_version[BZM_BRIDGE_VERSION_MAX_LENGTH + 1];
     char current_version[BZM_BRIDGE_VERSION_MAX_LENGTH + 1];
     char error[96];
 } bzm_bridge_update_status_t;
@@ -53,8 +70,20 @@ typedef struct {
 bool bzm_bridge_update_enabled(void);
 bool bzm_bridge_update_board_supported(const DeviceConfig *config);
 bool bzm_bridge_update_supported(const DeviceConfig *config);
+bool bzm_bridge_update_boot_recovery_allowed(
+    const DeviceConfig *config, esp_err_t bridge_error);
 esp_err_t bzm_bridge_update_validate_image(const uint8_t *image,
                                             size_t image_size);
+esp_err_t bzm_bridge_update_validate_manifest(
+    const uint8_t *image, size_t image_size,
+    bzm_bridge_image_manifest_t *manifest);
+esp_err_t bzm_bridge_update_validate_upload(
+    const uint8_t *image, size_t image_size, bool force,
+    bzm_bridge_image_manifest_t *manifest,
+    bool *manifest_validated);
+bool bzm_bridge_update_manifest_matches_info(
+    const bzm_bridge_image_manifest_t *manifest,
+    const bzm_bridge_info_t *info);
 const char *bzm_bridge_update_state_name(bzm_bridge_update_state_t state);
 
 /*
@@ -73,7 +102,8 @@ esp_err_t bzm_bridge_update_run(
 
 bool BZM_bridge_update_is_running(void);
 esp_err_t BZM_bridge_update_start(GlobalState *global_state,
-                                  uint8_t *image, size_t image_size);
+                                  uint8_t *image, size_t image_size,
+                                  bool force);
 void BZM_bridge_update_get_status(bzm_bridge_update_status_t *status);
 
 #endif /* BZM_BRIDGE_UPDATE_H */

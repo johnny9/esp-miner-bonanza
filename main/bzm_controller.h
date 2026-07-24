@@ -18,6 +18,7 @@ bool bzm_controller_dispatch_allowed(void);
 /* Exclusive verified-safe-off ownership for production maintenance. */
 bool bzm_controller_acquire_maintenance(
     bzm_supervisor_owner_t owner);
+bool bzm_controller_acquire_bridge_recovery(void);
 bool bzm_controller_release_maintenance(
     bzm_supervisor_owner_t owner);
 

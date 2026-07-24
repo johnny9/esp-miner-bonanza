@@ -12,6 +12,7 @@
 #include "asic_reset.h"
 #include "asic_result_task.h"
 #include "bap/bap.h"
+#include "bzm_bridge_update.h"
 #include "bzm_controller.h"
 #include "connect.h"
 #include "create_jobs_task.h"
@@ -114,8 +115,25 @@ void app_main(void)
 
     // Board identity decides whether reset is a direct GPIO or is owned by
     // the Bonanza RP2040 bridge. Never drive GPIO1 before that decision.
-    ESP_ERROR_CHECK(asic_hold_reset_low(&GLOBAL_STATE));
-    ESP_LOGI(TAG, "ASIC reset initialized to the safe state");
+    esp_err_t reset_safe_err = asic_hold_reset_low(&GLOBAL_STATE);
+    if (reset_safe_err == ESP_OK) {
+        ESP_LOGI(TAG, "ASIC reset initialized to the safe state");
+    } else if (bzm_bridge_update_boot_recovery_allowed(
+                   &GLOBAL_STATE.DEVICE_CONFIG, reset_safe_err)) {
+        /*
+         * A factory-blank RP2040 cannot acknowledge this command. Continue
+         * booting so Wi-Fi, AxeOS, and the onboard SWD recovery endpoint stay
+         * available. The Bonanza controller remains fail-closed and will not
+         * energize or dispatch work without coherent bridge safety evidence.
+         */
+        GLOBAL_STATE.SYSTEM_MODULE.mining_paused = true;
+        ESP_LOGE(TAG,
+                 "Bonanza bridge unavailable during early safe-state request: "
+                 "%s; continuing for HTTP bridge recovery",
+                 esp_err_to_name(reset_safe_err));
+    } else {
+        ESP_ERROR_CHECK(reset_safe_err);
+    }
 
     if (self_test_init(&GLOBAL_STATE) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to init self test");

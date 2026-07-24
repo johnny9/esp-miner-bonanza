@@ -1431,6 +1431,25 @@ static cJSON *bridge_update_status_json(void)
     cJSON_AddNumberToObject(root, "progress", status.progress_percent);
     cJSON_AddNumberToObject(root, "imageSize", status.image_size);
     cJSON_AddBoolToObject(root, "running", status.running);
+    cJSON_AddBoolToObject(root, "manifestValidated",
+                          status.manifest_validated);
+    cJSON_AddBoolToObject(root, "forceRequested",
+                          status.force_requested);
+    if (status.manifest_validated) {
+        cJSON_AddNumberToObject(root, "targetBoardVersion",
+                                status.target_board_version);
+        cJSON_AddStringToObject(root, "imageVersion",
+                                status.image_version);
+        cJSON_AddNumberToObject(root, "imageProtocolMajor",
+                                status.image_protocol_major);
+        cJSON_AddNumberToObject(root, "imageProtocolMinor",
+                                status.image_protocol_minor);
+    } else {
+        cJSON_AddNullToObject(root, "targetBoardVersion");
+        cJSON_AddNullToObject(root, "imageVersion");
+        cJSON_AddNullToObject(root, "imageProtocolMajor");
+        cJSON_AddNullToObject(root, "imageProtocolMinor");
+    }
     cJSON_AddBoolToObject(root, "versionQuerySupported",
                           status.version_query_supported);
     if (status.current_version[0] != '\0') {
@@ -1518,6 +1537,33 @@ static esp_err_t bridge_send_error(httpd_req_t *req, const char *status,
     return httpd_resp_sendstr(req, message);
 }
 
+static esp_err_t bridge_force_requested(httpd_req_t *req, bool *force)
+{
+    if (req == NULL || force == NULL) return ESP_ERR_INVALID_ARG;
+    *force = false;
+
+    size_t query_length = httpd_req_get_url_query_len(req);
+    if (query_length == 0) return ESP_OK;
+    if (query_length >= 64) return ESP_ERR_INVALID_SIZE;
+
+    char query[64];
+    esp_err_t query_err =
+        httpd_req_get_url_query_str(req, query, sizeof(query));
+    if (query_err != ESP_OK) return query_err;
+
+    char value[6];
+    esp_err_t err = httpd_query_key_value(
+        query, "force", value, sizeof(value));
+    if (err == ESP_ERR_NOT_FOUND) return ESP_OK;
+    if (err != ESP_OK) return err;
+    if (strcmp(value, "true") == 0) {
+        *force = true;
+        return ESP_OK;
+    }
+    if (strcmp(value, "false") == 0) return ESP_OK;
+    return ESP_ERR_INVALID_ARG;
+}
+
 static esp_err_t POST_bridge_firmware(httpd_req_t *req)
 {
     if (is_network_allowed(req) != ESP_OK) {
@@ -1526,6 +1572,12 @@ static esp_err_t POST_bridge_firmware(httpd_req_t *req)
     }
     if (set_cors_headers(req) != ESP_OK) {
         httpd_resp_send_500(req);
+        return ESP_OK;
+    }
+    bool force = false;
+    if (bridge_force_requested(req, &force) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "force must be true or false");
         return ESP_OK;
     }
 
@@ -1589,16 +1641,28 @@ static esp_err_t POST_bridge_firmware(httpd_req_t *req)
         received += count;
     }
 
-    esp_err_t validation = bzm_bridge_update_validate_image(
-        image, received);
+    bzm_bridge_image_manifest_t manifest;
+    bool manifest_validated = false;
+    esp_err_t validation = bzm_bridge_update_validate_upload(
+        image, received, force, &manifest,
+        &manifest_validated);
     if (validation != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "Invalid RP2040 raw firmware image");
+        httpd_resp_send_err(
+            req, HTTPD_400_BAD_REQUEST,
+            validation == ESP_ERR_INVALID_SIZE ||
+                    validation == ESP_ERR_INVALID_RESPONSE
+                ? "Invalid RP2040 image or BZM bridge manifest"
+                : "Valid BZM bridge firmware manifest required; "
+                  "use force=true only for testing");
         goto done;
+    }
+    if (force && !manifest_validated) {
+        ESP_LOGW(TAG,
+                 "accepting forced bridge test image without valid manifest");
     }
 
     esp_err_t start_err = BZM_bridge_update_start(
-        GLOBAL_STATE, image, received);
+        GLOBAL_STATE, image, received, force);
     if (start_err != ESP_OK) {
         if (start_err == ESP_ERR_INVALID_STATE) {
             bridge_send_error(req, "409 Conflict",

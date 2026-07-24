@@ -279,12 +279,45 @@ bool bzm_supervisor_acquire_maintenance(bzm_supervisor_t * supervisor, bzm_super
     return true;
 }
 
+bool bzm_supervisor_acquire_bridge_recovery(
+    bzm_supervisor_t *supervisor)
+{
+    if (supervisor == NULL || !supervisor->initialized ||
+        supervisor->owner != BZM_SUPERVISOR_OWNER_NONE ||
+        !supervisor->fault_latched ||
+        supervisor->report.state != BZM_VALIDATION_SHUTDOWN_UNVERIFIED) {
+        return false;
+    }
+
+    supervisor->owner = BZM_SUPERVISOR_OWNER_BRIDGE_UPDATE;
+    supervisor->lease_deadline_ms = 0;
+    return true;
+}
+
 bool bzm_supervisor_release_maintenance(bzm_supervisor_t * supervisor, bzm_supervisor_owner_t owner)
 {
     if (supervisor == NULL || !supervisor->initialized || !maintenance_owner(owner) || supervisor->owner != owner) {
         return false;
     }
+    bool bridge_recovery =
+        owner == BZM_SUPERVISOR_OWNER_BRIDGE_UPDATE &&
+        supervisor->fault_latched &&
+        supervisor->report.state ==
+            BZM_VALIDATION_SHUTDOWN_UNVERIFIED;
     bool off = stop_internal(supervisor, "maintenance released", true);
+    if (bridge_recovery && off) {
+        /*
+         * The blank-bridge exception began without a bridge-backed OFF_SAFE
+         * stage. Once the flashed bridge participates in a successful release,
+         * retain that fresh proof so the guarded ESP restart can proceed.
+         * Keep the fault latched; normal startup after restart must still
+         * repeat the complete production validation.
+         */
+        supervisor->report.requested_stage = BZM_STAGE_OFF_SAFE;
+        supervisor->report.reached_stage = BZM_STAGE_OFF_SAFE;
+        supervisor->report.stages[BZM_STAGE_OFF_SAFE] =
+            supervisor->report.final_safe_off;
+    }
     supervisor->owner = BZM_SUPERVISOR_OWNER_NONE;
     return off;
 }

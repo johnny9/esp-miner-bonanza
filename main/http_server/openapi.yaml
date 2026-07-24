@@ -61,6 +61,12 @@ components:
         - progress
         - imageSize
         - running
+        - manifestValidated
+        - forceRequested
+        - targetBoardVersion
+        - imageVersion
+        - imageProtocolMajor
+        - imageProtocolMinor
         - versionQuerySupported
         - currentVersion
         - error
@@ -88,6 +94,32 @@ components:
           maximum: 2097152
         running:
           type: boolean
+        manifestValidated:
+          type: boolean
+          description: Whether the uploaded image contained a valid BZM bridge manifest
+        forceRequested:
+          type: boolean
+          description: Whether the operator explicitly requested the test-only manifest bypass
+        targetBoardVersion:
+          anyOf:
+            - type: integer
+            - type: 'null'
+          description: Board version declared by the image manifest
+        imageVersion:
+          anyOf:
+            - type: string
+            - type: 'null'
+          description: Firmware version declared by the image manifest
+        imageProtocolMajor:
+          anyOf:
+            - type: integer
+            - type: 'null'
+          description: Bridge protocol major version declared by the image manifest
+        imageProtocolMinor:
+          anyOf:
+            - type: integer
+            - type: 'null'
+          description: Bridge protocol minor version declared by the image manifest
         versionQuerySupported:
           type: boolean
         currentVersion:
@@ -1430,11 +1462,28 @@ paths:
       description: >-
         Stages a separately supplied raw RP2040 .bin in ESP32 PSRAM and starts
         an asynchronous SWD update. ESP-Miner contains only the small SRAM
-        flash helper and never bundles a bridge firmware image. This route is
-        registered only for configured BZM bridge products.
+        flash helper and never bundles a bridge firmware image. By default the
+        upload must contain a valid board-1002 BZM bridge identity manifest.
+        This route is registered only for configured BZM bridge products. An
+        operating bridge requires verified safe-off ownership. For a
+        factory-blank unresponsive bridge, ESP-Miner keeps mining disabled and
+        verifies the independently controlled TPS546 rail off before granting
+        exclusive SWD recovery ownership.
       operationId: updateBridgeFirmware
       tags:
         - system
+      parameters:
+        - name: force
+          in: query
+          required: false
+          description: >-
+            Test-only escape hatch that permits a structurally valid RP2040
+            image without a valid BZM bridge manifest. It does not bypass board
+            support, safe-off ownership, SWD verification, or post-flash bridge
+            protocol checks.
+          schema:
+            type: boolean
+            default: false
       requestBody:
         required: true
         content:
@@ -1450,7 +1499,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/BridgeUpdateStatus'
         '400':
-          description: Invalid RP2040 raw firmware image
+          description: Invalid RP2040 image, invalid force value, or missing/invalid BZM bridge manifest
         '401':
           description: Unauthorized - Client not in allowed network range
         '409':

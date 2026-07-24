@@ -250,6 +250,46 @@ TEST_CASE("BZM maintenance safe-off failures latch closed",
         &release, BZM_STAGE_POWER_RAIL, true, true, 1000, 1));
 }
 
+TEST_CASE("BZM blank bridge recovery requires shutdown-unverified state",
+          "[asic][bzm][supervisor][maintenance][bridge-recovery]")
+{
+    simulated_hardware_t hardware = {
+        .fail_stage = BZM_STAGE_COUNT,
+        .safe_off_fails = true,
+    };
+    bzm_supervisor_t supervisor = supervisor_for(&hardware);
+
+    TEST_ASSERT_FALSE(
+        bzm_supervisor_acquire_bridge_recovery(&supervisor));
+    TEST_ASSERT_FALSE(bzm_supervisor_latch_fault(
+        &supervisor, BZM_VALIDATION_CODE_SAFE_OFF_FAILED,
+        "bridge unavailable"));
+    TEST_ASSERT_TRUE(supervisor.fault_latched);
+    TEST_ASSERT_EQUAL(BZM_VALIDATION_SHUTDOWN_UNVERIFIED,
+                      supervisor.report.state);
+
+    TEST_ASSERT_TRUE(
+        bzm_supervisor_acquire_bridge_recovery(&supervisor));
+    TEST_ASSERT_EQUAL(BZM_SUPERVISOR_OWNER_BRIDGE_UPDATE,
+                      supervisor.owner);
+    TEST_ASSERT_FALSE(
+        bzm_supervisor_acquire_bridge_recovery(&supervisor));
+
+    hardware.safe_off_fails = false;
+    TEST_ASSERT_TRUE(bzm_supervisor_release_maintenance(
+        &supervisor, BZM_SUPERVISOR_OWNER_BRIDGE_UPDATE));
+    TEST_ASSERT_EQUAL(BZM_SUPERVISOR_OWNER_NONE, supervisor.owner);
+    TEST_ASSERT_TRUE(supervisor.fault_latched);
+    TEST_ASSERT_EQUAL(BZM_VALIDATION_FAULT_LATCHED,
+                      supervisor.report.state);
+    TEST_ASSERT_TRUE(
+        bzm_supervisor_safe_off_verified(&supervisor));
+    TEST_ASSERT_TRUE(
+        bzm_supervisor_prepare_restart(&supervisor));
+    TEST_ASSERT_EQUAL(BZM_SUPERVISOR_OWNER_ESP_RESTART,
+                      supervisor.owner);
+}
+
 TEST_CASE("BZM maintenance preempts mining only after verified safe off",
           "[asic][bzm][supervisor][maintenance][mining]")
 {

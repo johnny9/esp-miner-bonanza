@@ -15,10 +15,21 @@ static const char * TAG = "thermal";
 esp_err_t Thermal_init(DeviceConfig * DEVICE_CONFIG)
 {
     if (DEVICE_CONFIG->bonanza_bridge) {
-        ESP_RETURN_ON_ERROR(BZM_bridge_init(), TAG,
-                            "Failed to initialise Bonanza control bridge");
-        ESP_RETURN_ON_ERROR(BZM_bridge_set_fan_percent(1.0f), TAG,
-                            "Failed to set Bonanza fan safe state");
+        esp_err_t bridge_err = BZM_bridge_init();
+        if (bridge_err == ESP_OK) {
+            bridge_err = BZM_bridge_set_fan_percent(1.0f);
+        }
+        if (bridge_err != ESP_OK) {
+            /*
+             * The bridge owns this fan. Leave its pins to the board's safe
+             * hardware defaults and continue booting into HTTP recovery; the
+             * Bonanza controller will not permit power-up or mining.
+             */
+            ESP_LOGE(TAG,
+                     "Bonanza fan safe-state unavailable: %s; "
+                     "continuing for HTTP bridge recovery",
+                     esp_err_to_name(bridge_err));
+        }
     }
     if (DEVICE_CONFIG->EMC2101) {
         ESP_RETURN_ON_ERROR(EMC2101_init(DEVICE_CONFIG->temp_offset), TAG, "Failed to initialise EMC2101");

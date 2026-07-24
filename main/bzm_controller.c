@@ -171,8 +171,11 @@ static bool runtime_restart_guard(void * context)
 static bool bridge_update_acquire(void * context)
 {
     (void) context;
-    return bzm_controller_acquire_maintenance(
-        BZM_SUPERVISOR_OWNER_BRIDGE_UPDATE);
+    if (bzm_controller_acquire_maintenance(
+            BZM_SUPERVISOR_OWNER_BRIDGE_UPDATE)) {
+        return true;
+    }
+    return bzm_controller_acquire_bridge_recovery();
 }
 
 static bool bridge_update_release(void * context)
@@ -1254,6 +1257,65 @@ bool bzm_controller_acquire_maintenance(bzm_supervisor_owner_t owner)
     sync_dispatch_locked();
     pthread_mutex_unlock(&RUNTIME.lock);
     return ok;
+}
+
+bool bzm_controller_acquire_bridge_recovery(void)
+{
+    pthread_mutex_lock(&RUNTIME.lock);
+    close_dispatch_locked();
+
+    GlobalState *state = RUNTIME.global_state;
+    bool eligible = RUNTIME.initialized && state != NULL &&
+                    RUNTIME.supervisor.owner ==
+                        BZM_SUPERVISOR_OWNER_NONE &&
+                    !BZM_bridge_is_initialized();
+    bool electrical_safe = false;
+
+    if (eligible) {
+        state->SYSTEM_MODULE.mining_paused = true;
+        state->ASIC_initalized = false;
+
+        esp_err_t off_err = VCORE_bzm_force_regulator_off(state);
+        TPS546_StatusSnapshot power = {0};
+        bool pgood = true;
+        if (off_err == ESP_OK) {
+            for (uint32_t waited = 0;
+                 waited <= BZM_SAFE_OFF_TIMEOUT_MS;
+                 waited += BZM_SAFE_OFF_SAMPLE_MS) {
+                if (VCORE_bzm_snapshot(&power, &pgood) == ESP_OK &&
+                    !pgood &&
+                    (power.operation & OPERATION_ON) == 0 &&
+                    power.read_vout * 1000.0f <=
+                        (float)CONFIG_BZM_1002_SAFE_OFF_VCORE_MV) {
+                    electrical_safe = true;
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(BZM_SAFE_OFF_SAMPLE_MS));
+            }
+        }
+
+        if (!electrical_safe) {
+            ESP_LOGE(TAG,
+                     "Blank-bridge recovery denied: regulator safe-off "
+                     "could not be verified (err=%s pgood=%s "
+                     "vout=%.3fV operation=0x%02x)",
+                     esp_err_to_name(off_err),
+                     pgood ? "high" : "low",
+                     power.read_vout, power.operation);
+        }
+    }
+
+    bool acquired =
+        eligible && electrical_safe &&
+        bzm_supervisor_acquire_bridge_recovery(&RUNTIME.supervisor);
+    if (acquired) {
+        ESP_LOGW(TAG,
+                 "Blank bridge detected with regulator verified off; "
+                 "granting exclusive SWD recovery ownership");
+    }
+    sync_dispatch_locked();
+    pthread_mutex_unlock(&RUNTIME.lock);
+    return acquired;
 }
 
 bool bzm_controller_release_maintenance(bzm_supervisor_owner_t owner)

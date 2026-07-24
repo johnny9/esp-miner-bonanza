@@ -178,10 +178,22 @@ esp_err_t VCORE_init(GlobalState * GLOBAL_STATE)
         };
         ESP_RETURN_ON_ERROR(gpio_config(&pgood), TAG,
                             "TPS546 PGOOD GPIO config failed");
-        ESP_RETURN_ON_ERROR(BZM_bridge_init(), TAG,
-                            "Bonanza bridge init failed");
-        ESP_RETURN_ON_ERROR(BZM_bridge_set_5v_enabled(false), TAG,
-                            "Bonanza 5V safe-state failed");
+        esp_err_t bridge_err = BZM_bridge_init();
+        if (bridge_err == ESP_OK) {
+            bridge_err = BZM_bridge_set_5v_enabled(false);
+        }
+        if (bridge_err != ESP_OK) {
+            /*
+             * Keep initializing the independently controlled TPS546 in its
+             * off state. A blank RP2040 must not prevent Wi-Fi/HTTP recovery,
+             * and the production controller will refuse to mine without the
+             * missing bridge readback.
+             */
+            ESP_LOGE(TAG,
+                     "Bonanza bridge safe-state unavailable: %s; "
+                     "keeping the TPS546 off for HTTP bridge recovery",
+                     esp_err_to_name(bridge_err));
+        }
     }
 
     if (GLOBAL_STATE->DEVICE_CONFIG.DS4432U) {
@@ -288,6 +300,23 @@ esp_err_t VCORE_bzm_set_rail_enabled(GlobalState *GLOBAL_STATE, bool enabled)
     }
     return bzm_power_set_rail_enabled(
         &BONANZA_POWER_OPS, GLOBAL_STATE, enabled);
+}
+
+esp_err_t VCORE_bzm_force_regulator_off(GlobalState *GLOBAL_STATE)
+{
+    if (GLOBAL_STATE == NULL ||
+        !GLOBAL_STATE->DEVICE_CONFIG.bonanza_bridge ||
+        !GLOBAL_STATE->DEVICE_CONFIG.TPS546) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /*
+     * This recovery-only primitive deliberately does not contact the RP2040.
+     * Drop the ESP-owned hardware enable first, then command the TPS546 off.
+     */
+    esp_err_t gpio_err = gpio_set_level(GPIO_ASIC_ENABLE, 0);
+    esp_err_t tps_err = TPS546_set_vout(0.0f);
+    return gpio_err != ESP_OK ? gpio_err : tps_err;
 }
 
 esp_err_t VCORE_bzm_snapshot(TPS546_StatusSnapshot *snapshot, bool *pgood)

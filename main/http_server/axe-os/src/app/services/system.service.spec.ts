@@ -50,7 +50,10 @@ describe('SystemApiService', () => {
     expect(request.request.body).toBe(image);
     request.flush({
       state: 'preparing', progress: 0, imageSize: image.size,
-      running: true, versionQuerySupported: false,
+      running: true, manifestValidated: true, forceRequested: false,
+      targetBoardVersion: 1002, imageVersion: '1.2.3',
+      imageProtocolMajor: 1, imageProtocolMinor: 0,
+      versionQuerySupported: false,
       currentVersion: null, error: null,
     });
   });

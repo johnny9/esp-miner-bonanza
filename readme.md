@@ -44,7 +44,7 @@ This table tracks AxeOS feature parity for the Bitaxe Bonanza. 🟢 **Working** 
 | Settings | Statistics/data logging | 🟡 Partially working | Logging and retention work, but generic power, temperature, voltage, and fan samples are not yet backed by Bonanza telemetry. |
 | Update | Manual ESP firmware OTA | 🟢 Working | Uploading `esp-miner.bin` is guarded by a verified Bonanza safe-off transition before flash and restart. |
 | Update | Manual AxeOS OTA | 🟢 Working | Uploading `www.bin`, progress reporting, and recovery mode are available. |
-| Update | RP2040 bridge firmware over HTTP | 🟢 Working | AxeOS accepts a raw RP2040 `.bin`, moves the miner to verified safe-off, programs and verifies the bridge over onboard SWD, resets it, and confirms the running bridge version. |
+| Update | RP2040 bridge firmware over HTTP | 🟢 Working | AxeOS accepts a raw RP2040 `.bin` with the board-1002 BZM bridge identity manifest, moves an operating bridge to verified safe-off, or keeps the ESP-owned regulator verified off for factory-blank recovery, then programs and verifies the bridge over onboard SWD, resets it, and confirms the running protocol and version match the manifest. A query-only `force=true` bypass exists for destructive regression fixtures and is not exposed in AxeOS. |
 | Update | Latest-release lookup/download | 🔴 Not yet working | AxeOS still queries the upstream ESP-Miner release feed, which is not Bonanza-aware and must not be used as a source of Bonanza firmware. |
 | Other | Bitcoin whitepaper | 🟢 Working | The bundled whitepaper link is a static AxeOS feature. |
 | API | REST and live WebSocket API | 🟡 Partially working | System, ASIC, statistics, scoreboard, logs, settings, restart, identify, ESP/AxeOS OTA, and bridge firmware update paths are available. Pause/resume and generic Bonanza power/heat/fan telemetry retain the limitations above. |
@@ -115,7 +115,7 @@ Available API endpoints:
 * `/api/system/identify` Identify the device
 * `/api/system/OTA` Update system firmware
 * `/api/system/OTAWWW` Update AxeOS
-* `/api/system/bridge/firmware` Update the RP2040 bridge from a raw `.bin`
+* `/api/system/bridge/firmware` Update the RP2040 bridge from a manifested raw `.bin` (`?force=true` bypasses only manifest identity for destructive testing)
 
 **PATCH**
 
@@ -192,7 +192,7 @@ curl -s http://YOUR-BITAXE-IP/api/system/info | jq '.asicHealth | {
 }'
 ```
 
-The bridge updater is available only on configured BZM bridge products. It stages the uploaded image in ESP32 PSRAM, acquires exclusive verified safe-off ownership, disconnects the bridge control UART, and uses the board's ESP32-to-RP2040 SWD connection to erase, program, and read-back verify the image. It then resets the RP2040, restores the control link, and queries the installed version. The update endpoints remain available even if the existing bridge firmware is unresponsive.
+The bridge updater is available only on configured BZM bridge products. It stages the uploaded image in ESP32 PSRAM and validates the embedded board-1002 BZM bridge identity manifest before changing hardware state. It then disconnects the bridge control UART and uses the board's ESP32-to-RP2040 SWD connection to erase, program, and read-back verify the image. An operating bridge must first enter exclusive verified safe-off ownership. If the bridge is factory-blank and cannot provide that evidence, ESP-Miner instead closes dispatch, keeps mining disabled, forces the independently controlled TPS546 off, verifies PGOOD low and VCORE discharged, and grants exclusive SWD recovery ownership. Bridge-controlled reset, 5 V, fan, trip, and lease state still depend on the board's safe hardware defaults until firmware is installed. The updater then resets the RP2040, restores the control link, and requires the running protocol and version to match the manifest. Wi-Fi, AxeOS, and the update endpoints remain available instead of entering a reboot loop when the existing bridge is unresponsive.
 
 ## Bridge firmware
 
@@ -231,14 +231,20 @@ curl --fail --show-error --tcp-nodelay \
   http://YOUR-BITAXE-IP/api/system/bridge/firmware
 ```
 
-The upload returns `202 Accepted` with a status object. Poll the status endpoint until `running` is `false`:
+The upload returns `202 Accepted` with a status object containing the validated
+manifest identity. Poll the status endpoint until `running` is `false`:
 
 ```bash
 watch -n 1 \
   'curl -fsS http://YOUR-BITAXE-IP/api/system/bridge/firmware/status | jq'
 ```
 
-The updater progresses through `preparing`, `erasing`, `programming`, `verifying`, `resetting`, and `querying`. Do not remove power during those states. A successful result ends in `complete`, reports `progress: 100`, and includes `currentVersion` when the new bridge supports version queries. A failed result ends in `failed` with an ESP-IDF error name; the recovery endpoint remains available for another upload.
+The updater progresses through `preparing`, `erasing`, `programming`, `verifying`, `resetting`, and `querying`. Do not remove power during those states. A successful result ends in `complete`, reports `progress: 100`, `manifestValidated: true`, and matching `imageVersion` and `currentVersion`. A failed result ends in `failed` with an ESP-IDF error name; the recovery endpoint remains available for another upload.
+
+Destructive hardware regression tests may append `?force=true` to upload a
+structurally valid RP2040 image without a BZM manifest. This bypass is not
+exposed in AxeOS and does not bypass supported-board checks, safe-off ownership,
+SWD read-back verification, or post-flash protocol checks.
 
 After a successful bridge update, restart ESP-Miner so the production controller performs its complete startup and compatibility checks against the new bridge:
 

@@ -60,6 +60,14 @@ bool bzm_supervisor_latch_fault(bzm_supervisor_t * supervisor, uint32_t fault_co
 bool bzm_supervisor_clear_fault(bzm_supervisor_t * supervisor);
 
 bool bzm_supervisor_acquire_maintenance(bzm_supervisor_t * supervisor, bzm_supervisor_owner_t owner, uint64_t now_ms);
+/*
+ * Factory-blank bridge recovery is the one maintenance operation that cannot
+ * obtain bridge-backed safe-off evidence. The caller must first prove the
+ * independently controlled regulator is off and confirm the bridge control
+ * link is unavailable.
+ */
+bool bzm_supervisor_acquire_bridge_recovery(
+    bzm_supervisor_t *supervisor);
 bool bzm_supervisor_release_maintenance(bzm_supervisor_t * supervisor, bzm_supervisor_owner_t owner);
 bool bzm_supervisor_prepare_restart(bzm_supervisor_t * supervisor);
 

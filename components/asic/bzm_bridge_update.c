@@ -17,8 +17,18 @@
 #define RP2040_XIP_START 0x10000100u
 #define RP2040_XIP_END 0x10200000u
 #define BZM_BRIDGE_UPDATE_TASK_STACK_BYTES 6144u
+#define BZM_BRIDGE_IMAGE_MANIFEST_SCHEMA_VERSION 1u
+#define BZM_BRIDGE_IMAGE_FIRMWARE_KIND 1u
+#define BZM_BRIDGE_IMAGE_MANIFEST_CRC_OFFSET \
+    (BZM_BRIDGE_IMAGE_MANIFEST_SIZE - 4u)
+#define BZM_BRIDGE_IMAGE_MANIFEST_VERSION_OFFSET 24u
+#define BZM_BRIDGE_IMAGE_MANIFEST_VERSION_CAPACITY 64u
 
 static const char *TAG = "bzm_bridge_update";
+static const uint8_t BZM_BRIDGE_IMAGE_MANIFEST_MAGIC[16] = {
+    'B', 'Z', 'M', '-', 'B', 'R', 'I', 'D',
+    'G', 'E', '-', 'F', 'W', 0, 0, 0,
+};
 static pthread_mutex_t UPDATE_LOCK = PTHREAD_MUTEX_INITIALIZER;
 static bzm_bridge_update_status_t UPDATE_STATUS;
 
@@ -28,6 +38,9 @@ typedef struct {
     size_t image_size;
     bool maintenance_entered;
     bool supervisor_lease_entered;
+    bool manifest_validated;
+    bool force_requested;
+    bzm_bridge_image_manifest_t manifest;
 } production_update_t;
 
 static bzm_bridge_update_maintenance_fn MAINTENANCE_ACQUIRE;
@@ -40,6 +53,24 @@ static uint32_t read_le32(const uint8_t *bytes)
            ((uint32_t)bytes[1] << 8) |
            ((uint32_t)bytes[2] << 16) |
            ((uint32_t)bytes[3] << 24);
+}
+
+static uint16_t read_le16(const uint8_t *bytes)
+{
+    return (uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8);
+}
+
+static uint32_t manifest_crc32(const uint8_t *bytes, size_t length)
+{
+    uint32_t crc = UINT32_MAX;
+    for (size_t index = 0; index < length; ++index) {
+        crc ^= bytes[index];
+        for (unsigned int bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^
+                  (0xedb88320u & (0u - (crc & 1u)));
+        }
+    }
+    return ~crc;
 }
 
 bool bzm_bridge_update_enabled(void)
@@ -57,6 +88,13 @@ bool bzm_bridge_update_supported(const DeviceConfig *config)
 {
     return bzm_bridge_update_enabled() &&
            bzm_bridge_update_board_supported(config);
+}
+
+bool bzm_bridge_update_boot_recovery_allowed(
+    const DeviceConfig *config, esp_err_t bridge_error)
+{
+    return bridge_error != ESP_OK &&
+           bzm_bridge_update_supported(config);
 }
 
 esp_err_t bzm_bridge_update_validate_image(const uint8_t *image,
@@ -93,6 +131,103 @@ esp_err_t bzm_bridge_update_validate_image(const uint8_t *image,
         return ESP_ERR_INVALID_RESPONSE;
     }
     return ESP_OK;
+}
+
+esp_err_t bzm_bridge_update_validate_manifest(
+    const uint8_t *image, size_t image_size,
+    bzm_bridge_image_manifest_t *manifest)
+{
+    if (image == NULL || manifest == NULL) return ESP_ERR_INVALID_ARG;
+    memset(manifest, 0, sizeof(*manifest));
+    if (image_size < BZM_BRIDGE_IMAGE_MANIFEST_SIZE) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    const uint8_t *encoded = NULL;
+    size_t offset = 0;
+    for (size_t index = 0;
+         index + BZM_BRIDGE_IMAGE_MANIFEST_SIZE <= image_size;
+         ++index) {
+        if (memcmp(image + index, BZM_BRIDGE_IMAGE_MANIFEST_MAGIC,
+                   sizeof(BZM_BRIDGE_IMAGE_MANIFEST_MAGIC)) != 0) {
+            continue;
+        }
+        if (encoded != NULL) return ESP_ERR_INVALID_RESPONSE;
+        encoded = image + index;
+        offset = index;
+    }
+    if (encoded == NULL) return ESP_ERR_NOT_FOUND;
+
+    uint8_t version_length =
+        encoded[BZM_BRIDGE_IMAGE_MANIFEST_VERSION_OFFSET - 1u];
+    if (encoded[16] != BZM_BRIDGE_IMAGE_MANIFEST_SCHEMA_VERSION ||
+        encoded[17] != BZM_BRIDGE_IMAGE_MANIFEST_SIZE ||
+        read_le16(encoded + 18) !=
+            BZM_BRIDGE_IMAGE_TARGET_BOARD_VERSION ||
+        encoded[20] != BZM_BRIDGE_IMAGE_FIRMWARE_KIND ||
+        encoded[21] != BZM_BRIDGE_PROTOCOL_MAJOR ||
+        version_length == 0 ||
+        version_length > BZM_BRIDGE_VERSION_MAX_LENGTH) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    for (size_t index = 0; index < version_length; ++index) {
+        uint8_t byte =
+            encoded[BZM_BRIDGE_IMAGE_MANIFEST_VERSION_OFFSET + index];
+        if (byte < 0x20 || byte > 0x7e) {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+    }
+    for (size_t index =
+             BZM_BRIDGE_IMAGE_MANIFEST_VERSION_OFFSET + version_length;
+         index < BZM_BRIDGE_IMAGE_MANIFEST_CRC_OFFSET; ++index) {
+        if (encoded[index] != 0) return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (read_le32(encoded + BZM_BRIDGE_IMAGE_MANIFEST_CRC_OFFSET) !=
+        manifest_crc32(encoded,
+                       BZM_BRIDGE_IMAGE_MANIFEST_CRC_OFFSET)) {
+        return ESP_ERR_INVALID_CRC;
+    }
+
+    manifest->offset = offset;
+    manifest->target_board_version = read_le16(encoded + 18);
+    manifest->protocol_major = encoded[21];
+    manifest->protocol_minor = encoded[22];
+    memcpy(manifest->version,
+           encoded + BZM_BRIDGE_IMAGE_MANIFEST_VERSION_OFFSET,
+           version_length);
+    manifest->version[version_length] = '\0';
+    return ESP_OK;
+}
+
+esp_err_t bzm_bridge_update_validate_upload(
+    const uint8_t *image, size_t image_size, bool force,
+    bzm_bridge_image_manifest_t *manifest,
+    bool *manifest_validated)
+{
+    if (manifest == NULL || manifest_validated == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *manifest_validated = false;
+    ESP_RETURN_ON_ERROR(
+        bzm_bridge_update_validate_image(image, image_size),
+        TAG, "invalid RP2040 image");
+    esp_err_t err = bzm_bridge_update_validate_manifest(
+        image, image_size, manifest);
+    if (err == ESP_OK) {
+        *manifest_validated = true;
+        return ESP_OK;
+    }
+    return force ? ESP_OK : err;
+}
+
+bool bzm_bridge_update_manifest_matches_info(
+    const bzm_bridge_image_manifest_t *manifest,
+    const bzm_bridge_info_t *info)
+{
+    return manifest != NULL && info != NULL &&
+           info->protocol_major == manifest->protocol_major &&
+           info->protocol_minor == manifest->protocol_minor &&
+           strcmp(info->version, manifest->version) == 0;
 }
 
 const char *bzm_bridge_update_state_name(bzm_bridge_update_state_t state)
@@ -319,6 +454,14 @@ static void update_task(void *parameter)
         update->image, update->image_size,
         &PRODUCTION_OPS, update, production_report, NULL,
         &installed_info, &version_query_supported);
+    if (err == ESP_OK && update->manifest_validated &&
+        (!version_query_supported ||
+         !bzm_bridge_update_manifest_matches_info(
+             &update->manifest, &installed_info))) {
+        ESP_LOGE(TAG,
+                 "installed bridge identity does not match image manifest");
+        err = ESP_ERR_INVALID_RESPONSE;
+    }
 
     pthread_mutex_lock(&UPDATE_LOCK);
     UPDATE_STATUS.running = false;
@@ -351,21 +494,35 @@ bool BZM_bridge_update_is_running(void)
 }
 
 esp_err_t BZM_bridge_update_start(GlobalState *global_state,
-                                  uint8_t *image, size_t image_size)
+                                  uint8_t *image, size_t image_size,
+                                  bool force)
 {
     if (!bzm_bridge_update_enabled()) return ESP_ERR_NOT_SUPPORTED;
     if (global_state == NULL || image == NULL ||
         !bzm_bridge_update_supported(&global_state->DEVICE_CONFIG)) {
         return ESP_ERR_INVALID_ARG;
     }
-    ESP_RETURN_ON_ERROR(bzm_bridge_update_validate_image(image, image_size),
-                        TAG, "invalid RP2040 image");
+    bzm_bridge_image_manifest_t manifest;
+    bool manifest_validated = false;
+    ESP_RETURN_ON_ERROR(
+        bzm_bridge_update_validate_upload(
+            image, image_size, force, &manifest,
+            &manifest_validated),
+        TAG, "bridge upload validation failed");
 
     production_update_t *update = calloc(1, sizeof(*update));
     if (update == NULL) return ESP_ERR_NO_MEM;
     update->global_state = global_state;
     update->image = image;
     update->image_size = image_size;
+    update->manifest_validated = manifest_validated;
+    update->force_requested = force;
+    if (update->manifest_validated) update->manifest = manifest;
+    if (force) {
+        ESP_LOGW(TAG,
+                 "forced bridge upload requested; manifest valid=%s",
+                 update->manifest_validated ? "true" : "false");
+    }
 
     pthread_mutex_lock(&UPDATE_LOCK);
     if (UPDATE_STATUS.running) {
@@ -378,7 +535,20 @@ esp_err_t BZM_bridge_update_start(GlobalState *global_state,
         .progress_percent = 0,
         .image_size = image_size,
         .running = true,
+        .manifest_validated = update->manifest_validated,
+        .force_requested = force,
     };
+    if (update->manifest_validated) {
+        UPDATE_STATUS.target_board_version =
+            update->manifest.target_board_version;
+        UPDATE_STATUS.image_protocol_major =
+            update->manifest.protocol_major;
+        UPDATE_STATUS.image_protocol_minor =
+            update->manifest.protocol_minor;
+        strlcpy(UPDATE_STATUS.image_version,
+                update->manifest.version,
+                sizeof(UPDATE_STATUS.image_version));
+    }
     pthread_mutex_unlock(&UPDATE_LOCK);
 
     /*
